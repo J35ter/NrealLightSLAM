@@ -168,7 +168,7 @@ Implications:
 |--------|--------|-----------|
 | Algorithm | **Mahony complementary filter** | Proven for 3-DoF orientation, cheap (f32 math only), already implemented and tested in `neuromancer-ahrs` |
 | Gains | `kp` (proportional), `ki` (integral) | CLI-tunable at runtime (`--kp`, `--ki`); defaults 1.0 / 0.005 |
-| Output | Unit quaternion → yaw/pitch/roll | YXZ Tait-Bryan convention, RUB frame, degrees for HUD, radians on the wire |
+| Output | Unit quaternion → yaw/pitch/roll | YXZ Tait-Bryan convention, RUB frame, degrees for HUD, degrees on the wire by default (`--units deg|rad`) |
 | Fusion rate | ≥ 100 Hz input, output at configured rate | Filter consumes every sample; output loop decimates |
 
 No magnetometer in Nreal Light — heading (yaw) reference comes from gyro
@@ -283,7 +283,7 @@ neuromancer-tracker [OPTIONS]
   --invert-roll        Invert roll axis
   --sensitivity <F>    Output sensitivity multiplier (default 1.0)
   --log-imu <PATH>     Append raw IMU samples to file (JSONL)
-  --log-pose <PATH>    Append filtered pose to file (JSONL, radians)
+  --log-pose <PATH>    Append filtered pose to file (JSONL, wire units)
   --version            Print version and exit
   --help               Print help and exit
 ```
@@ -299,7 +299,7 @@ neuromancer-tracker [OPTIONS]
 
 **UDP output:**
 - 48-byte native-endian 6×f64 `[TX, TY, TZ, Yaw, Pitch, Roll]`
-- X/Y/Z = 0 (3-DoF, P1); YXZ Tait-Bryan; **radians** on the wire
+- X/Y/Z = 0 (3-DoF, P1); YXZ Tait-Bryan; **degrees** on the wire by default (see §4.2 Units)
 - Sent to `--host:--port` at up to 60 Hz (or `--hud`-only when `--no-udp`)
 
 **Axis mapping (coordinate & calibration layer):**
@@ -362,9 +362,9 @@ offset  size  field      meaning
 0       8     TX         translation X — 0.0 (3-DoF)
 8       8     TY         translation Y — 0.0 (3-DoF)
 16      8     TZ         translation Z — 0.0 (3-DoF)
-24      8     Yaw        yaw   (radians, YXZ Tait-Bryan)
-32      8     Pitch      pitch (radians, YXZ Tait-Bryan)
-40      8     Roll       roll  (radians, YXZ Tait-Bryan)
+24      8     Yaw        yaw   (degrees by default, YXZ Tait-Bryan)
+32      8     Pitch      pitch (degrees by default, YXZ Tait-Bryan)
+40      8     Roll       roll  (degrees by default, YXZ Tait-Bryan)
 ```
 
 | Property | Value |

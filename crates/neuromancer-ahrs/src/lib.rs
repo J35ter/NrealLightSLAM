@@ -228,10 +228,10 @@ impl Mahony {
         let wy = gyro[1] + self.kp * ey + self.integral[1];
         let wz = gyro[2] + self.kp * ez + self.integral[2];
 
-        // Quaternion kinematics (world → body, body-frame rates): q̇ = ½ ω ⊗ q.
-        // Note the operand order: ω ⊗ q, NOT q ⊗ ω — the latter would be the
-        // body→world convention and rotate the wrong way.
-        let qdot = (Quat::new(0.0, wx, wy, wz) * self.q).scale(0.5);
+        // Quaternion kinematics (world → body, body-frame rates): q̇ = ½ q ⊗ ω.
+        // (Canonical form — Madgwick/Mahony reference impl, Solà. The gyro is
+        // measured in the body frame, so it right-multiplies: q ⊗ ω, not ω ⊗ q.)
+        let qdot = (self.q * Quat::new(0.0, wx, wy, wz)).scale(0.5);
 
         // Integrate and normalize.
         let q_new = Quat::new(
@@ -369,6 +369,28 @@ mod tests {
             let q2 = quat_from_ypr(y2, p2, r2);
             assert_quat_close(q2, q, 1e-9);
         }
+    }
+
+    /// Body-frame gyro integration composes on the RIGHT (q ⊗ ω kinematics).
+    ///
+    /// Discriminates q̇ = ½ q ⊗ ω from the wrong ½ ω ⊗ q: start yawed 45°,
+    /// rotate about the *body* z-axis at 30°/s for 1 s with no accel — the
+    /// correct world→body quaternion is `q0 ⊗ Rz(30°)`, NOT `Rz(30°) ⊗ q0`.
+    #[test]
+    fn mahony_body_frame_gyro_composes_right() {
+        let mut f = Mahony::new();
+        let q0 = quat_from_ypr(45.0 * DEG, 0.0, 0.0);
+        f.q = q0;
+        let omega = 30.0 * DEG;
+        let dt = 0.005;
+        for _ in 0..200 {
+            f.update([0.0, 0.0, 0.0], [0.0, 0.0, omega], dt); // body-frame z rotation
+        }
+        let expected = q0 * Quat::from_axis_angle([0.0, 0.0, 1.0], omega * 200.0 * dt);
+        assert_quat_close(f.quaternion(), expected, 1e-6);
+        // Sanity: the wrong composition is measurably different.
+        let wrong = Quat::from_axis_angle([0.0, 0.0, 1.0], omega * 200.0 * dt) * q0;
+        assert!(f.quaternion().w != wrong.w || (f.quaternion().x - wrong.x).abs() > 1e-3);
     }
 
     /// Mahony converges to level (pitch/roll → 0) from a tilted start with

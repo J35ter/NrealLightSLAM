@@ -164,7 +164,8 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 "--hud" => cfg.hud = true,
                 "--invert-yaw" => cfg.invert_yaw = true,
                 "--invert-pitch" => cfg.invert_pitch = true,
-                _ => cfg.invert_roll = true,
+                "--invert-roll" => cfg.invert_roll = true,
+                _ => unreachable!("flagless set is exhaustive"),
             }
             continue;
         }
