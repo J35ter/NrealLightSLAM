@@ -69,6 +69,11 @@ pub fn parse_imu_line(line: &str) -> Result<Option<ImuSample>, String> {
             .trim()
             .parse()
             .map_err(|_| format!("invalid number for {key:?}: {v:?}"))?;
+        if !value.is_finite() {
+            // Reject NaN/inf — a non-finite sample would poison the filter dt
+            // and orientation (Mahony has no finite guard by design).
+            return Err(format!("non-finite number for {key:?}: {v:?}"));
+        }
         if let Some(idx) = keys.iter().position(|&k| k == key) {
             vals[idx] = Some(value);
         }
@@ -120,6 +125,12 @@ mod tests {
         let line = r#"{"t": 1.0, "ax": 0.1, "ay": 0.2, "az": 0.3, "gx": 0.4, "gy": 0.5, "gz": 0.6, "extra": 99}"#;
         let s = parse_imu_line(line).unwrap().unwrap();
         assert_eq!(s.gx, 0.4);
+    }
+
+    #[test]
+    fn parse_rejects_non_finite() {
+        assert!(parse_imu_line(r#"{"t": 1.0, "ax": NaN, "ay": 0, "az": 0, "gx": 0, "gy": 0, "gz": 0}"#).is_err());
+        assert!(parse_imu_line(r#"{"t": 1.0, "ax": 0, "ay": 0, "az": 0, "gx": inf, "gy": 0, "gz": 0}"#).is_err());
     }
 
     #[test]

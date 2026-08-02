@@ -98,9 +98,15 @@ impl ArgIter {
         if let Some(v) = self.pending.take() {
             return Ok(v);
         }
-        self.inner
+        let v = self
+            .inner
             .next()
-            .ok_or_else(|| format!("option {name} requires a value"))
+            .ok_or_else(|| format!("option {name} requires a value"))?;
+        if v.starts_with('-') {
+            // Don't swallow a following flag as this option's value.
+            return Err(format!("option {name} requires a value (got {v:?})"));
+        }
+        Ok(v)
     }
 }
 
@@ -143,6 +149,26 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
             it.pending = Some(v);
         }
 
+        // Value-less flags: reject any inline value (`--hud=1`) so it can't
+        // be stolen by the next value-taking flag (`--hud=1 --host x`).
+        let flagless = matches!(
+            flag.as_str(),
+            "--no-udp" | "--hud" | "--invert-yaw" | "--invert-pitch" | "--invert-roll"
+        );
+        if flagless {
+            if it.pending.take().is_some() {
+                return Err(format!("option {flag} takes no value"));
+            }
+            match flag.as_str() {
+                "--no-udp" => cfg.no_udp = true,
+                "--hud" => cfg.hud = true,
+                "--invert-yaw" => cfg.invert_yaw = true,
+                "--invert-pitch" => cfg.invert_pitch = true,
+                _ => cfg.invert_roll = true,
+            }
+            continue;
+        }
+
         match flag.as_str() {
             "-h" | "--help" => return Ok(ParseOutcome::Help),
             "-V" | "--version" => return Ok(ParseOutcome::Version),
@@ -155,8 +181,8 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                     return Err("invalid value for --port: must be 1-65535".to_string());
                 }
             }
-            "--no-udp" => cfg.no_udp = true,
-            "--hud" => cfg.hud = true,
+            "--no-udp" => { /* handled by the flagless branch above */ }
+            "--hud" => { /* handled by the flagless branch above */ }
             "--hud-rate" => {
                 let raw = it.take("--hud-rate")?;
                 cfg.hud_rate = parse_pos(&raw, "--hud-rate")?;
@@ -169,9 +195,9 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 let raw = it.take("--ki")?;
                 cfg.ki = parse_nonneg(&raw, "--ki")?;
             }
-            "--invert-yaw" => cfg.invert_yaw = true,
-            "--invert-pitch" => cfg.invert_pitch = true,
-            "--invert-roll" => cfg.invert_roll = true,
+            "--invert-yaw" => { /* handled by the flagless branch above */ }
+            "--invert-pitch" => { /* handled by the flagless branch above */ }
+            "--invert-roll" => { /* handled by the flagless branch above */ }
             "--sensitivity" => {
                 let raw = it.take("--sensitivity")?;
                 cfg.sensitivity = parse_nonneg(&raw, "--sensitivity")?;
@@ -305,6 +331,22 @@ mod tests {
         assert!(matches!(run(&["--help"]).unwrap(), ParseOutcome::Help));
         assert!(matches!(run(&["-h"]).unwrap(), ParseOutcome::Help));
         assert!(matches!(run(&["--version"]).unwrap(), ParseOutcome::Version));
+    }
+
+    #[test]
+    fn rejects_inline_value_on_value_less_flags() {
+        for f in ["--hud", "--no-udp", "--invert-yaw", "--invert-pitch", "--invert-roll"] {
+            assert!(run(&[&format!("{f}=1")]).is_err(), "{f}=1 must error");
+        }
+        // The parked inline value must never be stolen by the next flag.
+        assert!(run(&["--hud=1", "--host", "x"]).is_err());
+    }
+
+    #[test]
+    fn rejects_flag_as_value() {
+        assert!(run(&["--host", "--hud"]).is_err());
+        assert!(run(&["--port", "--no-udp"]).is_err());
+        assert!(run(&["--kp", "--invert-roll"]).is_err());
     }
 
     #[test]

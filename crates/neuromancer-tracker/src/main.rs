@@ -106,7 +106,9 @@ fn run(cfg: Config) -> ExitCode {
     if let Err(e) = ctrlc::set_handler(|| {
         let n = CTRL_C.fetch_add(1, Ordering::SeqCst) + 1;
         if n >= 2 {
-            // Second Ctrl-C: immediate exit 1.
+            // Second Ctrl-C: immediate exit 1. Note: `process::exit` skips
+            // destructors, so any buffered log lines are lost here — flushing
+            // from a signal handler is not async-signal-safe, accepted trade-off.
             std::process::exit(1);
         }
     }) {
@@ -154,6 +156,12 @@ fn run(cfg: Config) -> ExitCode {
             Err(ImuError::Eof) => {
                 eprintln!("replay input exhausted — shutting down cleanly");
                 break;
+            }
+            Err(ImuError::Io(e)) => {
+                // Malformed/unreadable replay file — a bad input, not a
+                // hardware failure (exit code 1, not 3).
+                eprintln!("error: replay input failed: {e}");
+                return ExitCode::from(1);
             }
             Err(e) => {
                 eprintln!("error: IMU input failed: {e}");

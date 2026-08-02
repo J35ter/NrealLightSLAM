@@ -254,7 +254,7 @@ loop {
     quat   = mahony.update(sample)     // filter step (dt from sample timing)
     ypr    = quat_to_ypr(quat)         // yaw/pitch/roll, degrees
     apply_axis_mapping(&mut ypr)       // inversion flags, sensitivity
-    if udp_enabled && due(60 Hz): send_pose(ypr)   // radians on wire
+    if udp_enabled && due(60 Hz): send_pose(ypr)   // wire units: deg default (--units)
     if hud_enabled && due(2 Hz):   hud_print(ypr)  // degrees on screen
 }
 ```
@@ -372,18 +372,18 @@ offset  size  field      meaning
 | Byte order | **native endianness** of the sending machine (Opentrack reads host-endian) |
 | Frame | right-up-back (RUB) |
 | Euler convention | YXZ Tait-Bryan (yaw → pitch → roll order) |
-| Units | radians on the wire |
+| Units | **degrees** on the wire by default (`--units deg|rad`) — resolved in P1: Opentrack's UDP tracker reads rotation as degrees (verified in `tracker-udp/ftnoir_tracker_udp.cpp`); the original "radians" here would overshoot ~57× |
 | Rate | 60 Hz max; no minimum — send latest pose whenever due |
 | Port | default 4242 (Opentrack "UDP over network" tracker) |
 | Host | default 127.0.0.1; any LAN host supported |
 | Packet behavior | stateless — each packet is a complete pose; no handshake, no ack |
 
-**OQ1 resolution needed:** Opentrack's UDP tracker historically accepts the
-classic 6-double frame; some builds support an extended 10-double variant.
-Spec targets **classic 6×f64**; Codex must confirm against the installed
-Opentrack version and document the choice. If the extended variant is
-required, X/Y/Z slots 0–2 stay 0 and fields 6–9 (pose confidence, etc.)
-get sane defaults.
+**OQ1 — resolved in P1:** the tracker ships a `--protocol classic|extended`
+switch (default classic). Classic = 48-byte 6×f64; extended = 80-byte 10×f64
+with X/Y/Z slots 0–2 at 0 and fields 6–9 defaulting to `[1.0, 0, 0, 0]`
+(pose-valid default + reserved). Verified against opentrack master: the
+stock UDP tracker reads only the first 6 doubles (`readDatagram(..., 48)`)
+and interprets rotation in **degrees** — see the Units row above.
 
 ### 4.3 HUD output (G7)
 
@@ -413,7 +413,8 @@ the headset has.
 ```json
 {"t": 1785530000.133, "yaw": 0.21, "pitch": -0.07, "roll": 0.01}
 ```
-- Values in radians (matches wire format); used for latency/drift analysis
+- Values in the selected wire units (`--units`, default **degrees**); used
+  for latency/drift analysis
 
 Both logs are best-effort: a write failure logs a warning and continues —
 never crashes the tracker loop.
@@ -540,7 +541,7 @@ dependency to de-risk early, not a final-week surprise.
 
 | ID | Question | Status |
 |----|----------|--------|
-| OQ1 | Opentrack UDP protocol variant (6×f64 vs 10-double)? | Open — Codex to confirm against installed Opentrack (§4.2) |
+| OQ1 | Opentrack UDP protocol variant (6×f64 vs 10-double)? | **Resolved — both**: `--protocol classic|extended` (default classic). Wire units **degrees** by default, `--units deg|rad` (stock Opentrack reads degrees — verified in opentrack source, §4.2) |
 | OQ2 | Rust toolchain on `mini`? | **Resolved — yes**: Rust 1.97.1 (MSVC target) + VS Build Tools 2022 verified 2026-08-01 (see [[Development/environment/mini/README\|mini env docs]]) |
 | OQ3 | Nreal Light IMU sample rate over USB? | Open — measure in P1 (affects dt handling) |
 | OQ4 | Raw IMU logging? | **Resolved — yes**, `--log-imu` (§3.4, §4.4) |

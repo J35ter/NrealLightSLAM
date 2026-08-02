@@ -185,7 +185,8 @@ impl Mahony {
     ///   acceleration); normalized internally, any scale works.
     /// - `gyro`: `[gx, gy, gz]` — body-frame angular velocity in rad/s.
     /// - `dt`: elapsed time since the previous sample, in seconds. Pass `0.0`
-    ///   for the first sample (gyro-only orientation correction still applies).
+    ///   for the first sample — no integration step happens, the sample only
+    ///   establishes the reference time.
     ///
     /// Returns the updated orientation quaternion.
     pub fn update(&mut self, accel: [f64; 3], gyro: [f64; 3], dt: f64) -> Quat {
@@ -227,7 +228,9 @@ impl Mahony {
         let wy = gyro[1] + self.kp * ey + self.integral[1];
         let wz = gyro[2] + self.kp * ez + self.integral[2];
 
-        // Quaternion kinematics (world → body, body-frame rates): q̇ = ½ q ⊗ ω.
+        // Quaternion kinematics (world → body, body-frame rates): q̇ = ½ ω ⊗ q.
+        // Note the operand order: ω ⊗ q, NOT q ⊗ ω — the latter would be the
+        // body→world convention and rotate the wrong way.
         let qdot = (Quat::new(0.0, wx, wy, wz) * self.q).scale(0.5);
 
         // Integrate and normalize.

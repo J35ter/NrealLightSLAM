@@ -3,7 +3,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, IsTerminal, Write};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -84,16 +84,21 @@ impl UdpSink {
         units: Units,
         rate_hz: f64,
     ) -> io::Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect((host, port))?;
+        // Resolve host once (hostname or IP, v4/v6) and use the same address
+        // for both the connect() and the reported destination.
+        let dest: SocketAddr = (host, port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cannot resolve host"))?;
+        let socket = if dest.is_ipv4() {
+            UdpSocket::bind("0.0.0.0:0")?
+        } else {
+            UdpSocket::bind("[::]:0")?
+        };
+        socket.connect(dest)?;
         Ok(UdpSink {
             socket,
-            dest: SocketAddr::new(
-                host.parse().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "invalid host address")
-                })?,
-                port,
-            ),
+            dest,
             gate: RateGate::new(rate_hz),
             protocol,
             units,
@@ -330,6 +335,14 @@ mod tests {
         assert!((vals[3] - std::f64::consts::PI).abs() < 1e-9);
         assert_eq!(vals[6], 1.0); // pose-valid/confidence default
         assert_eq!(vals[7..10], [0.0, 0.0, 0.0]); // reserved
+    }
+
+    #[test]
+    fn udp_bind_accepts_hostname_and_ipv6() {
+        assert!(UdpSink::bind("localhost", 9, Protocol::Classic, Units::Deg, 60.0).is_ok());
+        assert!(UdpSink::bind("::1", 9, Protocol::Classic, Units::Deg, 60.0).is_ok());
+        assert!(UdpSink::bind("does-not-exist.invalid", 9, Protocol::Classic, Units::Deg, 60.0)
+            .is_err());
     }
 
     #[test]
