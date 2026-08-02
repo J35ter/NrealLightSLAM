@@ -2,7 +2,7 @@
 
 **Document owner:** Neuromancer (Hermes, default profile)
 **Prepared for:** Codex CLI (DeepSeek V4 Flash backend)
-**Status:** Complete — reviewed by Neuromancer 2026-08-01, approved by V (sections 1–4), Codex-ready
+**Status:** Complete — reviewed by Neuromancer 2026-08-01, approved by V (sections 1–4), Codex-ready. **Phase 1 implemented 2026-08-03 — see Appendix C (implementation handoff); V hardware testing scheduled 2026-08-04**
 **Last updated:** 2026-08-01
 
 ---
@@ -543,7 +543,7 @@ dependency to de-risk early, not a final-week surprise.
 |----|----------|--------|
 | OQ1 | Opentrack UDP protocol variant (6×f64 vs 10-double)? | **Resolved — both**: `--protocol classic|extended` (default classic). Wire units **degrees** by default, `--units deg|rad` (stock Opentrack reads degrees — verified in opentrack source, §4.2) |
 | OQ2 | Rust toolchain on `mini`? | **Resolved — yes**: Rust 1.97.1 (MSVC target) + VS Build Tools 2022 verified 2026-08-01 (see [[Development/environment/mini/README\|mini env docs]]) |
-| OQ3 | Nreal Light IMU sample rate over USB? | Open — measure in P1 (affects dt handling) |
+| OQ3 | Nreal Light IMU sample rate over USB? | **Resolved — measured at runtime**: tracker prints `imu_rate=<Hz>` after the first 30 samples (200 Hz in synthetic test); dt is timestamp-derived with a 100 ms clamp, so 100 Hz vs 200 Hz input is handled automatically (C.1) |
 | OQ4 | Raw IMU logging? | **Resolved — yes**, `--log-imu` (§3.4, §4.4) |
 
 ## Appendix B — Document status
@@ -554,3 +554,100 @@ dependency to de-risk early, not a final-week surprise.
 - §4 Output Options — **approved**
 - §5 Build & Deployment — **reviewed** (toolchain on mini verified — OQ2 resolved)
 - Status: **complete and Codex-ready** — handoff next
+
+## Appendix C — Phase 1 implementation handoff (2026-08-03)
+
+Phase 1 (3-DoF, Linux) is implemented per this spec in the two-crate workspace
+(`crates/neuromancer-ahrs`, `crates/neuromancer-tracker`). 46 tests pass,
+clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
+`0bf47c5`. See `README.md` for quick start + full CLI reference.
+
+### C.1 Research findings resolved during implementation
+
+- **OQ1 — Opentrack UDP protocol.** Stock Opentrack's "UDP over network"
+  tracker reads exactly 6×f64 and copies them raw into its pose, then offers
+  ±90/±180° offsets — verified in `tracker-udp/ftnoir_tracker_udp.cpp`
+  (opentrack master). ⇒ rotation on the wire is **degrees**, not radians.
+  The 10-double "extended" variant is NOT an opentrack protocol: it is a
+  third-party (smartphone-app) convention — the same 6 doubles + 4 reserved
+  doubles; stock opentrack truncates the datagram to 48 bytes and ignores
+  them. Shipped: `--protocol classic|extended` (default classic); extended
+  fields 6–9 = `[1.0, 0, 0, 0]` (pose-valid default + reserved).
+- **Wire units.** The original spec text said "radians on the wire"; sending
+  radians to stock opentrack overshoots ~57× (breaks T5). Resolved: **degrees
+  by default**, `--units deg|rad` switch. The pose log follows the selected
+  wire units. Spec §2.4/§3.3/§3.5/§4.2/§4.4 updated accordingly.
+- **OQ3 — IMU sample rate.** Not fixed in advance; the tracker measures and
+  prints `imu_rate=<Hz>` after the first 30 samples (200 Hz in the synthetic
+  replay test). `dt` is derived from sample timestamps with a 100 ms clamp,
+  so 100 Hz vs 200 Hz input is handled automatically.
+- **ar-drivers 0.4.3 quirk.** Its `nreal` feature map omits `rusb`, but the
+  Nreal Light backend (`nreal_light.rs`) uses rusb/libusb unconditionally —
+  the crate only compiles with `features = ["nreal", "rusb"]`. Spec §2.3's
+  "ar-drivers via libusb" is confirmed correct.
+- **Mahony convention.** Canonical kinematics `q̇ = ½ q ⊗ ω` (world→body,
+  body-frame gyro; Madgwick/Mahony reference impl, Solà) with error term
+  `v × a` (estimated × measured gravity). Convergent from 30–40° tilts;
+  a dedicated discriminating test (`mahony_body_frame_gyro_composes_right`)
+  guards the operand order. Math is f64 (spec §2.4 mentioned f32) for
+  deterministic long-run drift behavior; the crate stays dependency-free.
+
+### C.2 Deliberate deviations / additions (vs spec text)
+
+| # | Item | Why |
+|---|------|-----|
+| 1 | `--units deg|rad`, **degrees default** on the wire | Opentrack reads degrees (C.1); spec's "radians" would fail T5 |
+| 2 | `--protocol classic|extended` switch | OQ1 — both variants, user switch |
+| 3 | `--udp-rate <HZ>` flag (default 60) | G2 "≥ 60 Hz" vs §4.2 "60 Hz max" inconsistency; user chose flag |
+| 4 | `--replay <PATH>` dev input | Hardware-free testing (deviation from §2.3 "no file input" — production input remains USB-exclusive) |
+| 5 | Pose log = wire units, one line per filter frame | "Matches wire format" per §4.4; full rate for latency analysis |
+| 6 | Rate decimator emits 50 Hz from a 200 Hz stream | Every 4th sample ≥ 16.7 ms interval — "60 Hz max, no minimum" §4.2; `--udp-rate` can raise it |
+| 7 | HUD fixed-width columns (`{:6.1}`) | Stable columns for video capture (spec §4.3 intent) |
+
+### C.3 Acceptance-test status (spec §3.7)
+
+| Test | Status | Where |
+|------|--------|-------|
+| T1 `cargo build --release` (Linux) | **PASSED** | dev box (.240) |
+| T4 `--no-udp --hud`, no UDP packets | **PASSED** (replay); re-run with glasses | verified via `--replay` — listener on 4242 saw no packets |
+| T7 `--log-imu` + replay through filter | **PASSED** | integration test `replay_through_filter_tracks_yaw` |
+| T8 `cargo test` (ahrs crate) | **PASSED** — 14 tests | `cargo test --workspace` (46 total) |
+| T2 headset rotation → HUD sign/magnitude | **TOMORROW (needs glasses)** | hardware on .240 |
+| T3 60 s still → yaw drift < 5° | **TOMORROW (needs glasses)** | hardware on .240 |
+| T5 Opentrack receives pose, head-look works | **TOMORROW (needs glasses + Opentrack)** | hardware on .240 |
+| T6 USB unplug mid-run → exit 3 | **TOMORROW (needs glasses)** | hardware on .240 |
+
+### C.4 V's test checklist for tomorrow
+
+```bash
+cargo build --release && cargo test --workspace     # sanity
+target/release/neuromancer-tracker --hud            # default UDP 127.0.0.1:4242 + HUD
+target/release/neuromancer-tracker --no-udp --hud   # HUD only
+target/release/neuromancer-tracker --log-imu /tmp/imu.jsonl --hud
+```
+
+1. **T2 sign check:** rotate the headset left/right (yaw), up/down (pitch),
+   and tilt (roll). If an axis reads inverted vs head motion, use
+   `--invert-yaw/--invert-pitch/--invert-roll` (or `--sensitivity` to scale).
+   Note the convention: +yaw = turn left ("turning left is positive y" per
+   ar-drivers). Calibrate with the flags and report the mapping back.
+2. **T3 drift:** place the headset still on a table for 60 s; watch HUD yaw —
+   expect < 5° drift with pitch/roll stable. Run
+   `--log-pose /tmp/pose.jsonl` for a numeric record.
+3. **T5 Opentrack:** start Opentrack, add the "UDP over network" tracker on
+   127.0.0.1:4242, start the tracker, check head-look in a game or the
+   Opentrack preview. The wire is 6×f64 **degrees**, native endianness.
+4. **T6 unplug:** pull the USB cable mid-run — expect a clear error and exit
+   code 3 (restart to reconnect).
+5. Report back: HUD captures (phone video), the measured `imu_rate` line,
+   drift numbers, exit codes. Any sign mismatch gets fixed in code or via the
+   flags.
+
+### C.5 Known caveats
+
+- Yaw has no absolute reference (no magnetometer) — slow yaw drift is expected
+  and only partially corrected; T3's 5°/60 s budget is the pass bar.
+- Second Ctrl-C forces exit and may drop buffered log lines (flushing from a
+  signal handler is not async-signal-safe — accepted trade-off).
+- Windows USB (P4) risk unchanged: ar-drivers/libusb + WinUSB via Zadig (§5.4).
+- IMU/pose logs are append-only with no rotation (§5.7).
