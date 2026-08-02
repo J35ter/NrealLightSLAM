@@ -1,0 +1,14 @@
+[package]
+name = "neuromancer-tracker"
+description = "Nreal Light head tracker: USB IMU -> Mahony AHRS -> Opentrack UDP + 2 Hz HUD (Phase 1, 3-DoF)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+# ar-drivers 0.4.3's `nreal` feature map omits `rusb`, but the Nreal Light
+# backend (nreal_light.rs) uses rusb/libusb unconditionally — enabling the
+# optional `rusb` dependency explicitly is required to compile it.
+ar-drivers = { version = "0.4.3", default-features = false, features = ["nreal", "rusb"] }
+ctrlc = "3.4"
