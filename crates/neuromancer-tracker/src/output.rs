@@ -63,6 +63,10 @@ fn wire_value(v_deg: f64, units: Units) -> f64 {
     }
 }
 
+/// How often a failing UDP sink re-warns, at most (throttles the
+/// "Connection refused" spam when the destination is not listening).
+const UDP_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Opentrack UDP sink (spec §4.2): 48-byte 6×f64 (classic) or 80-byte
 /// 10×f64 (extended), native endianness, stateless datagrams, rate-gated.
 pub struct UdpSink {
@@ -71,9 +75,12 @@ pub struct UdpSink {
     gate: RateGate,
     protocol: Protocol,
     units: Units,
-    /// Set after a send failure; used to warn only on the first failure of a
-    /// streak (spec: warn + continue, never crash).
-    failing: bool,
+    /// Last time a send failure was reported — warnings are throttled to at
+    /// most one per `UDP_WARN_INTERVAL`. On Linux a connected socket to an
+    /// unbound port alternates Ok/Err per send (ICMP port-unreachable is
+    /// reported once, then consumed), so a simple warn-once-per-streak flag
+    /// would flap and spam.
+    last_warn: Option<Instant>,
 }
 
 impl UdpSink {
@@ -102,7 +109,7 @@ impl UdpSink {
             gate: RateGate::new(rate_hz),
             protocol,
             units,
-            failing: false,
+            last_warn: None,
         })
     }
 
@@ -133,12 +140,21 @@ impl Sink for UdpSink {
         }
         let (buf, len) = self.payload(frame);
         match self.socket.send(&buf[..len]) {
-            Ok(_) => self.failing = false,
-            Err(e) if !self.failing => {
-                self.failing = true;
-                eprintln!("warning: UDP send to {} failed: {e}", self.dest);
+            Ok(_) => {}
+            Err(e) => {
+                let now = Instant::now();
+                let should_warn =
+                    self.last_warn.is_none() || now.duration_since(self.last_warn.unwrap()) >= UDP_WARN_INTERVAL;
+                if should_warn {
+                    self.last_warn = Some(now);
+                    eprintln!(
+                        "warning: UDP send to {} failed: {e} (is Opentrack listening on port {}?) — further warnings throttled to once/{:.0}s",
+                        self.dest,
+                        self.dest.port(),
+                        UDP_WARN_INTERVAL.as_secs_f64()
+                    );
+                }
             }
-            Err(_) => {}
         }
     }
 
@@ -306,7 +322,7 @@ mod tests {
             gate: RateGate::new(60.0),
             protocol: Protocol::Classic,
             units: Units::Deg,
-            failing: false,
+            last_warn: None,
         };
         let (buf, len) = sink.payload(&frame(30.0, -10.0, 5.0));
         assert_eq!(len, 48);
@@ -326,7 +342,7 @@ mod tests {
             gate: RateGate::new(60.0),
             protocol: Protocol::Extended,
             units: Units::Rad,
-            failing: false,
+            last_warn: None,
         };
         let (buf, len) = sink.payload(&frame(180.0, 0.0, 0.0));
         assert_eq!(len, 80);

@@ -543,7 +543,7 @@ dependency to de-risk early, not a final-week surprise.
 |----|----------|--------|
 | OQ1 | Opentrack UDP protocol variant (6×f64 vs 10-double)? | **Resolved — both**: `--protocol classic|extended` (default classic). Wire units **degrees** by default, `--units deg|rad` (stock Opentrack reads degrees — verified in opentrack source, §4.2) |
 | OQ2 | Rust toolchain on `mini`? | **Resolved — yes**: Rust 1.97.1 (MSVC target) + VS Build Tools 2022 verified 2026-08-01 (see [[Development/environment/mini/README\|mini env docs]]) |
-| OQ3 | Nreal Light IMU sample rate over USB? | **Resolved — measured at runtime**: tracker prints `imu_rate=<Hz>` after the first 30 samples (200 Hz in synthetic test); dt is timestamp-derived with a 100 ms clamp, so 100 Hz vs 200 Hz input is handled automatically (C.1) |
+| OQ3 | Nreal Light IMU sample rate over USB? | **Resolved — measured**: ~**1650 Hz** on real glasses (V's first run, 2026-08-03); tracker prints `imu_rate=<Hz>` after the first 30 samples; dt is timestamp-derived with a 100 ms clamp, so any rate is handled automatically (C.1) |
 | OQ4 | Raw IMU logging? | **Resolved — yes**, `--log-imu` (§3.4, §4.4) |
 
 ## Appendix B — Document status
@@ -578,9 +578,11 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
   by default**, `--units deg|rad` switch. The pose log follows the selected
   wire units. Spec §2.4/§3.3/§3.5/§4.2/§4.4 updated accordingly.
 - **OQ3 — IMU sample rate.** Not fixed in advance; the tracker measures and
-  prints `imu_rate=<Hz>` after the first 30 samples (200 Hz in the synthetic
-  replay test). `dt` is derived from sample timestamps with a 100 ms clamp,
-  so 100 Hz vs 200 Hz input is handled automatically.
+  prints `imu_rate=<Hz>` after the first 30 samples. Synthetic replay showed
+  200 Hz; **real glasses measured ~1650 Hz** (V's first hardware run,
+  2026-08-03) — the Nreal Light IMU delivers one report per USB read at that
+  rate. `dt` is timestamp-derived with a 100 ms clamp, so the filter handles
+  it without changes.
 - **ar-drivers 0.4.3 quirk.** Its `nreal` feature map omits `rusb`, but the
   Nreal Light backend (`nreal_light.rs`) uses rusb/libusb unconditionally —
   the crate only compiles with `features = ["nreal", "rusb"]`. Spec §2.3's
@@ -637,6 +639,9 @@ target/release/neuromancer-tracker --log-imu /tmp/imu.jsonl --hud
 3. **T5 Opentrack:** start Opentrack, add the "UDP over network" tracker on
    127.0.0.1:4242, start the tracker, check head-look in a game or the
    Opentrack preview. The wire is 6×f64 **degrees**, native endianness.
+   Note: if Opentrack is not running, the tracker prints a throttled
+   "UDP send failed … Connection refused (is Opentrack listening?)" warning
+   at most once per 5 s — that is expected and harmless.
 4. **T6 unplug:** pull the USB cable mid-run — expect a clear error and exit
    code 3 (restart to reconnect).
 5. Report back: HUD captures (phone video), the measured `imu_rate` line,
