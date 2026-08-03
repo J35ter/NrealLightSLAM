@@ -743,17 +743,34 @@ SlamCamera ──▶ [VisualSource] ──▶ rectify ──▶ FAST ──▶ K
 All hardware checks passed (clean exit, no hangs); the spike exposed two
 things that shape P2a's remaining work:
 
-- **SLAM camera frame rate is ~6 fps in practice, not the spec's ~30 fps.**
-  Three of four runs (with and without `--record-visual`) measured 6 fps;
-  one run measured 28 fps — a rare burst. `ar-drivers` configures the
-  sensor for 30 fps via UVC (`bFrameInterval = 333333` in
-  `ENABLE_STREAMING_PACKET`) but the device delivers complete frames at
-  ~6 fps. Replay of a recorded session runs at ~990 fps (CPU-bound,
-  unpaced), so the variance is in camera/USB delivery, not the VO
-  pipeline or HUD. The pipeline uses per-frame timestamps, so it degrades
-  gracefully — but "30 fps" is not a safe assumption; treat ~6 fps as the
-  real envelope and design VO/CPU headroom for it. Diagnosing the device
-  rate (per-frame timestamp log over a longer capture) is part of M8.
+- **The SLAM camera itself delivers a rock-solid 30 fps** — the earlier
+  "~6 fps device" reading was wrong. A dedicated probe
+  (`cam_probe`, `crates/neuromancer-tracker/examples/cam_probe.rs`) that
+  times every `get_frame` call shows a steady 33.3 ms cadence (p50 33.4,
+  p99 33.8 ms, no jitter) with only the first frame paying a ~395 ms
+  warm-up. The spec's 30 fps UVC config (`bFrameInterval = 333333`) holds.
+- **The bottleneck is `ar-drivers` 0.4.3 `get_frame`, and it is
+  alignment-dependent (bimodal, not a stable rate).** The read loop only
+  accepts a bulk read where `recvd == 615908 && bulk_data[0] != 0`,
+  otherwise it retries with the **full timeout** (`read_bulk(..., timeout)`
+  instead of the computed `actual_timeout`). When the first bulk read
+  lands mid-frame, every subsequent read consumes ~2 frame intervals
+  (~74 ms) — a permanent ~13 fps state; when it lands on a frame
+  boundary, reads are ~33 ms (30 fps). Probe runs were consistently
+  either 29–30 fps or exactly ~10 fps, never in between. The tracker's
+  old first-30-frame snapshot reported 6 fps when the 395 ms warm-up
+  frame plus ~74 ms reads and ~26 ms VO landed inside the window.
+- **VO pose estimation costs ~26 ms/frame on real frames (fast-fail is
+  ~0 ms).** `vo.process` returns `None` (no pose) in ~0 ms, but a
+  successful motion estimate (RANSAC + Umeyama + GN on ≤1500 features)
+  costs ~26 ms. So end-to-end rate is: `33 ms read + 26 ms VO = ~59 ms`
+  → **~17 fps best case with a pose every frame**, or the misaligned
+  `74 + 26 = 100 ms` → **~10 fps**. Sustained-rate reporting was added
+  to the tracker's visual mode so future runs distinguish warm-up noise
+  from steady-state.
+- **`ar-drivers` device timestamps are unusable for pacing analysis**
+  (all deltas 0 — quantized by the `/1000 + 37600` offset path); wall
+  clock is the only reliable timing.
 - **Intrinsics are not yet wired** (known): VO runs on the hardcoded
   rectified rig (`fx=fy=500`, baseline 0.12 m), producing km-scale pose
   garbage on real scenes — expected, and the reason M8 (CameraDescriptor
@@ -779,6 +796,12 @@ things that shape P2a's remaining work:
   before the read error is observed. Regression test
   `cli_sigint_mid_run_exits_0` (SIGINT to a running process must exit 0);
   `ctrlc` dependency removed.
+
+**M7 action item for M8:** patch or vendor `ar-drivers` `get_frame` to use
+`actual_timeout` in the retry loop and to treat a partial-frame read as
+incomplete data rather than restarting the frame window — that removes the
+~13 fps alignment state entirely. The VO ~26 ms pose cost is secondary
+(headroom to M8 tuning).
 
 ### D.6 Remaining P2a milestones
 

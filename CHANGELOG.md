@@ -38,10 +38,15 @@ All notable changes per release. Semver per spec §5.6
 
 - `--input visual` opens/streams on hardware; record→replay round-trip
   verified (357 frames → `/tmp/spike_seq`, clean exits).
-- **SLAM camera rate is ~6 fps in practice** (spec assumed ~30 fps;
-  ar-drivers UVC config requests 30 fps but the device delivers ~6 fps —
-  one 28 fps run was a rare burst). Pipeline is timestamp-based, but
-  CPU/design headroom must assume ~6 fps.
+- **Camera rate is 30 fps, steady** (probe-verified; the earlier "~6 fps
+  device" reading was wrong). See D.5: `ar-drivers` `get_frame` is
+  alignment-dependent — reads that land mid-frame take ~74 ms (permanent
+  ~13 fps state) vs ~33 ms when aligned, and VO pose cost (~26 ms/frame)
+  is on top. End-to-end is ~10–17 fps with a pose every frame. New
+  `cam_probe` example (`crates/neuromancer-tracker/examples/cam_probe.rs`)
+  times every read; the tracker now also logs a **sustained** rate at exit
+  (first-30-frame snapshot was skewed by the 395 ms warm-up frame).
+  `ar-drivers` device timestamps are unusable (all deltas 0).
 - **IMU+camera coexistence confirmed** in both orders (spec D.1 risk did
   not materialize).
 - Real IMU rate measured at **1000 Hz** (not the ~200 Hz assumed when OQ3

@@ -6,6 +6,7 @@
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use neuromancer_ahrs::{quat_to_ypr, Mahony};
 use neuromancer_tracker::axis::AxisMap;
@@ -414,6 +415,7 @@ fn run_visual(cfg: Config) -> ExitCode {
     let mut frames: u64 = 0;
     let mut rate_reported = false;
     let mut t_first: Option<f64> = None;
+    let run_start = Instant::now();
     loop {
         if CTRL_C.load(Ordering::SeqCst) >= 1 {
             log_info!("SIGINT received — shutting down cleanly");
@@ -466,6 +468,13 @@ fn run_visual(cfg: Config) -> ExitCode {
     }
     if recorder.is_some() {
         log_info!("recorded {recorded} visual frames");
+    }
+    let run_secs = run_start.elapsed().as_secs_f64();
+    if frames > 0 {
+        log_info!(
+            "visual pipeline sustained rate: {:.1} fps ({frames} frames in {run_secs:.1} s)",
+            frames as f64 / run_secs.max(1e-9)
+        );
     }
     drop(sinks);
     log_info!("tracker exited");
