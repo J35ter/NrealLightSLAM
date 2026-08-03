@@ -148,6 +148,18 @@ silently (visible as "in-run gyro bias refreshed" at `--log-level info`). No
 persistence across boots — the turn-on bias is random per power cycle, so a
 fresh 2 s measurement is always more accurate than a saved value.
 
+## Scripts & tools
+
+- `start-tracker.sh` — launcher: HUD + UDP output with the protocol switch
+  (env-overridable: `PROTOCOL`, `HOST`, `PORT`, `UDP_RATE`, `UNITS`,
+  `LOG_LEVEL`, `GYRO_CALIB`). Builds the release binary on first use.
+- `tools/udp_listen.py` — UDP diagnostic that parses packets exactly like
+  Opentrack's "UDP over network" tracker (48 B / 80 B, degrees, rejects
+  NaN/Inf). Use it to isolate the tracker's UDP output from Opentrack's
+  config: `python3 tools/udp_listen.py 10` in one terminal, run the tracker
+  in another.
+- `CHANGELOG.md` — per-release notes; P1 is pinned as tag `v0.1.0`.
+
 ## Conventions & implementation notes
 
 - **Frames:** RUB body frame (+X right, +Y up, +Z back — matches `ar-drivers`
