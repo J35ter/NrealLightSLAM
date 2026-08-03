@@ -18,5 +18,6 @@ pub mod camera;
 pub mod features;
 pub mod frame;
 pub mod klt;
+pub mod motion;
 pub mod stereo;
 pub mod synthetic;
