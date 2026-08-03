@@ -47,9 +47,14 @@ All notable changes per release. Semver per spec §5.6
 - Real IMU rate measured at **1000 Hz** (not the ~200 Hz assumed when OQ3
   closed).
 - **Fixed: Ctrl-C race** — SIGINT landing inside a blocking USB IMU read
-  made hidapi report "unplugged?" and the tracker wrongly exit 3; the
-  error path now checks the Ctrl-C flag first (clean exit 0). Regression
-  test `cli_sigint_mid_run_exits_0` (80 tests total).
+  made hidapi report "unplugged?" and the tracker wrongly exit 3. Root
+  cause: `ctrlc` sets the flag from a separate waiter thread, so it could
+  lose the scheduling race against the interrupted read's error return.
+  Replaced `ctrlc` with a direct `sigaction` handler that increments the
+  flag in signal context (async-signal-safe; `_exit` on second press;
+  no SA_RESTART so the blocking read returns EINTR) — the flag is always
+  set before the read error is observed. Regression test
+  `cli_sigint_mid_run_exits_0` (80 tests total).
 - Intrinsics still not wired (known): km-scale pose garbage on real
   scenes — M8 (CameraDescriptor + fisheye rectification + `imu_to_camera`)
   next.

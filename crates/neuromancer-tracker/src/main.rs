@@ -307,18 +307,43 @@ fn build_sinks(cfg: &Config) -> (Vec<Box<dyn Sink>>, Option<ImuLogSink>) {
     (sinks, imu_log)
 }
 
+/// SIGINT handler — must be async-signal-safe: lock-free atomic RMW and
+/// `_exit` only (no allocation, no locks, no logging).
+///
+/// The flag is set **in signal context**, so a Ctrl-C that interrupts the
+/// blocking USB read is already visible to the main thread when the read
+/// returns its error — unlike `ctrlc`'s handler, which only posts a
+/// semaphore and increments the flag from a separate waiter thread that may
+/// not be scheduled before the main thread checks it (the race that made
+/// Ctrl-C during an IMU read exit 3 with a bogus "unplugged" error).
+extern "C" fn on_sigint(_: libc::c_int) {
+    let n = CTRL_C.fetch_add(1, Ordering::SeqCst) + 1;
+    if n >= 2 {
+        // Second Ctrl-C: immediate exit 1. `_exit` (not `process::exit`,
+        // which runs atexit handlers) is the async-signal-safe choice;
+        // buffered log lines are lost, accepted trade-off.
+        unsafe { libc::_exit(1) }
+    }
+}
+
 /// Install the Ctrl-C handler (first press = graceful, second = force exit).
 fn install_signal_handler() {
-    if let Err(e) = ctrlc::set_handler(|| {
-        let n = CTRL_C.fetch_add(1, Ordering::SeqCst) + 1;
-        if n >= 2 {
-            // Second Ctrl-C: immediate exit 1. Note: `process::exit` skips
-            // destructors, so any buffered log lines are lost here — flushing
-            // from a signal handler is not async-signal-safe, accepted trade-off.
-            std::process::exit(1);
+    // SAFETY: standard sigaction setup; the handler only touches the
+    // lock-free atomic above. SA_RESTART is deliberately NOT set so that a
+    // Ctrl-C interrupts the blocking USB read (EINTR) instead of silently
+    // restarting it, letting the loop observe the request promptly.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigint as *const () as libc::sighandler_t;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = 0;
+        // Match ctrlc's default surface (SIGINT/SIGTERM/SIGHUP) so `kill`
+        // and terminal close keep the documented clean-shutdown behavior.
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
+                eprintln!("warning: cannot install signal handler for {sig}");
+            }
         }
-    }) {
-        log_warn!("cannot install Ctrl-C handler: {e}");
     }
 }
 

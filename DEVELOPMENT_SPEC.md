@@ -766,10 +766,19 @@ things that shape P2a's remaining work:
 - **Real IMU rate measured at 1000 Hz** (not the ~200 Hz assumed when
   OQ3 was closed) — dt handling is timestamp-derived and clamps, so this
   is handled automatically; note it for UDP decimation expectations.
-- **Ctrl-C race found & fixed (commit `196f6bf`+):** SIGINT landing while
-  the USB IMU read is blocked made hidapi report "unplugged?" and the
-  tracker wrongly exited 3. The error path now checks the Ctrl-C flag
-  first and exits 0; regression test `cli_sigint_mid_run_exits_0`.
+- **Ctrl-C race found & fixed (commits `4b11637`+, root cause in
+  `196f6bf`-era analysis):** SIGINT landing while the USB IMU read is
+  blocked makes hidapi report "unplugged?" and the tracker wrongly exit 3.
+  The first attempt (check the `CTRL_C` flag in the error path) was still
+  racy — `ctrlc` increments the flag from a separate waiter thread, so the
+  flag may not be set when the interrupted read returns. The real fix
+  replaces `ctrlc` with a direct `sigaction` handler that increments the
+  flag **in signal context** (async-signal-safe lock-free atomic; `_exit`
+  on the second press; SA_RESTART deliberately unset so the blocking read
+  returns EINTR). The flag is therefore always visible to the main thread
+  before the read error is observed. Regression test
+  `cli_sigint_mid_run_exits_0` (SIGINT to a running process must exit 0);
+  `ctrlc` dependency removed.
 
 ### D.6 Remaining P2a milestones
 
