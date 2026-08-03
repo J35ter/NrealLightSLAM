@@ -34,11 +34,30 @@ All notable changes per release. Semver per spec §5.6
   verified).
 - 79 tests total; clippy clean.
 
+### M7 hardware spike (2026-08-04, glasses on .240) — findings
+
+- `--input visual` opens/streams on hardware; record→replay round-trip
+  verified (357 frames → `/tmp/spike_seq`, clean exits).
+- **SLAM camera rate is unstable: 6–28 fps run-to-run** (spec assumed
+  ~30 fps) — pipeline is timestamp-based, but CPU/design headroom must
+  assume the worst case.
+- **IMU+camera coexistence confirmed** in both orders (spec D.1 risk did
+  not materialize).
+- Real IMU rate measured at **1000 Hz** (not the ~200 Hz assumed when OQ3
+  closed).
+- **Fixed: Ctrl-C race** — SIGINT landing inside a blocking USB IMU read
+  made hidapi report "unplugged?" and the tracker wrongly exit 3; the
+  error path now checks the Ctrl-C flag first (clean exit 0). Regression
+  test `cli_sigint_mid_run_exits_0` (80 tests total).
+- Intrinsics still not wired (known): km-scale pose garbage on real
+  scenes — M8 (CameraDescriptor + fisheye rectification + `imu_to_camera`)
+  next.
+
 ### Pending
 
-- M7 hardware spike (glasses on .240): SlamCamera @ ~30 fps, intrinsics
-  sanity + fisheye rectification, IMU+camera coexistence, head-frame
-  alignment (`imu_to_camera`), real-scene VO tuning.
+- M8: wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye
+  rectification into the rig; head-frame alignment (`imu_to_camera`).
+- M9: real-scene VO tuning on `/tmp/spike_seq`.
 
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 

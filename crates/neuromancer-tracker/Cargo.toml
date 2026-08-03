@@ -13,3 +13,7 @@ neuromancer-vo = { path = "../neuromancer-vo" }
 # optional `rusb` dependency explicitly is required to compile it.
 ar-drivers = { version = "0.4.3", default-features = false, features = ["nreal", "rusb"] }
 ctrlc = "3.4"
+
+[dev-dependencies]
+# SIGINT delivery to the child process in the process-level Ctrl-C test.
+libc = "0.2"

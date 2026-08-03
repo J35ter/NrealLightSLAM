@@ -734,9 +734,47 @@ SlamCamera ──▶ [VisualSource] ──▶ rectify ──▶ FAST ──▶ K
 | M4 | Motion estimation + incremental 6-DoF pose | synthetic trajectory: pose error vs ground truth | **DONE** — RANSAC + Umeyama 3D-3D + Gauss–Newton reprojection refinement (replaces DLT-PnP: planar degeneracy, and stereo depth exists in both frames); < 5 mm/< 5 mrad well-constrained regime |
 | M5 | Outputs per §4.6 (position in frames/UDP/HUD/pose log); `--input visual` end-to-end | integration tests + live replay | **DONE** — position in meters; UDP TX/TY/TZ in **cm** (Opentrack convention); HUD X/Y/Z; pose log x/y/z |
 | M6 | `--record-visual` / `--replay-visual` (mirror `--log-imu`/`--replay`) | recorded frame replay | **DONE** — round-trip verified |
-| M7 | Hardware spike on .240: frames @30 fps, intrinsics sanity, IMU+camera coexistence | physical | **PENDING — needs glasses (V)** |
+| M7 | Hardware spike on .240: frames @30 fps, intrinsics sanity, IMU+camera coexistence | physical | **DONE 2026-08-04 — see D.5 findings; intrinsics/rectification wiring deferred to M8** |
 
 ### D.4 Risks (flagged, per spec "honest expectation")
+
+### D.5 M7 hardware-spike findings (2026-08-04, V on .240 with glasses)
+
+All hardware checks passed (clean exit, no hangs); the spike exposed two
+things that shape P2a's remaining work:
+
+- **SLAM camera frame rate is unstable — 6–28 fps run-to-run, not the
+  spec's ~30 fps.** Two runs with identical flags (`--input visual
+  --no-udp`) measured 6 fps; the 28 fps run had `--record-visual` on.
+  Replay of the recorded 357-frame session runs at ~990 fps (CPU-bound,
+  unpaced), so the variance is in the camera/USB delivery, not the VO
+  pipeline or HUD. The pipeline uses per-frame timestamps, so it degrades
+  gracefully — but "30 fps" is not a safe assumption; treat ~6–30 fps as
+  the real envelope and design VO/CPU headroom for the worst case.
+- **Intrinsics are not yet wired** (known): VO runs on the hardcoded
+  rectified rig (`fx=fy=500`, baseline 0.12 m), producing km-scale pose
+  garbage on real scenes — expected, and the reason M8 (CameraDescriptor
+  intrinsics + fisheye rectification + `imu_to_camera`) is the next
+  milestone. 357 raw frames from the spike are preserved in
+  `/tmp/spike_seq` for offline tuning.
+- **IMU+camera coexistence confirmed** in both orders (camera→IMU and
+  IMU→camera) — the D.1 "one source alive at a time" risk did not
+  materialize.
+- **Real IMU rate measured at 1000 Hz** (not the ~200 Hz assumed when
+  OQ3 was closed) — dt handling is timestamp-derived and clamps, so this
+  is handled automatically; note it for UDP decimation expectations.
+- **Ctrl-C race found & fixed (commit `196f6bf`+):** SIGINT landing while
+  the USB IMU read is blocked made hidapi report "unplugged?" and the
+  tracker wrongly exited 3. The error path now checks the Ctrl-C flag
+  first and exits 0; regression test `cli_sigint_mid_run_exits_0`.
+
+### D.6 Remaining P2a milestones
+
+| M | Deliverable | Verification | Status |
+|---|-------------|--------------|--------|
+| M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **PENDING** |
+| M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **PENDING** |
+
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's
   "acceptable drift" bar as a stepping stone — the real cure is IMU fusion

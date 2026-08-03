@@ -154,6 +154,14 @@ fn run(cfg: Config) -> ExitCode {
                 return ExitCode::from(1);
             }
             Err(e) => {
+                // A Ctrl-C that lands while blocked in the USB read makes
+                // hidapi report "unplugged?" — that's the signal interrupting
+                // the read, not a device failure. Check the flag before
+                // declaring the device gone (spike finding 2026-08-04).
+                if CTRL_C.load(Ordering::SeqCst) >= 1 {
+                    log_info!("SIGINT received — shutting down cleanly");
+                    break;
+                }
                 log_error!("error: IMU input failed: {e}");
                 log_error!(
                     "(device unplugged — restart the tracker to reconnect; exit code 3)"

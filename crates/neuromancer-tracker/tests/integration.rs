@@ -17,7 +17,9 @@ const G: f64 = 9.81;
 
 /// Write a synthetic IMU recording to a temp file and return its path.
 fn write_recording(dir: &std::path::Path, samples: &[ImuSample]) -> std::path::PathBuf {
-    let path = dir.join(format!("rec-{}.jsonl", std::process::id()));
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!("rec-{}-{}.jsonl", std::process::id(), n));
     let mut f = std::fs::File::create(&path).unwrap();
     for s in samples {
         write_imu(&mut f, s).unwrap();
@@ -390,6 +392,57 @@ fn cli_replay_run_terminates_cleanly() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("device=replay("), "got {stdout}");
     assert!(stdout.contains("out=disabled"));
+}
+
+#[test]
+fn cli_sigint_mid_run_exits_0() {
+    // Spec §3.5: first Ctrl-C = clean shutdown, exit 0 — even when the
+    // signal lands while the input source is inside a blocking read (spike
+    // finding 2026-08-04: hidapi surfaced the interrupted USB read as
+    // "unplugged?" and the tracker wrongly exited 3). A paced replay keeps
+    // the process alive long enough to send SIGINT mid-run.
+    let dir = std::env::temp_dir();
+    // 30 s of samples at 200 Hz: the paced replay runs ~30 s.
+    let mut samples = yaw_recording();
+    for i in 200..30 * 200 {
+        samples.push(ImuSample {
+            t: i as f64 * 0.005,
+            ax: 0.0,
+            ay: G,
+            az: 0.0,
+            gx: 0.0,
+            gy: 30.0f64.to_radians(),
+            gz: 0.0,
+        });
+    }
+    let path = write_recording(&dir, &samples);
+
+    let mut child = std::process::Command::new(bin())
+        .args(["--replay", path.to_str().unwrap(), "--no-udp"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Wait for startup (replay opens, calibration starts), then SIGINT.
+    std::thread::sleep(Duration::from_millis(800));
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&path);
+            panic!("tracker did not exit within 5 s of SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(status.code(), Some(0), "SIGINT must produce a clean exit 0");
 }
 
 /// Write a 7-frame synthetic forward stereo sequence into `dir` and return
