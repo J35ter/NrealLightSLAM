@@ -188,6 +188,7 @@ dependencies = [
  "ar-drivers",
  "ctrlc",
  "neuromancer-ahrs",
+ "neuromancer-vo",
 ]
 
 [[package]]

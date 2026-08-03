@@ -11,11 +11,20 @@ use crate::cli::{Protocol, Units};
 use crate::jsonl::{self, ImuSample};
 
 /// One filtered pose handed to the sinks: `t` = stream time, `ypr_deg` =
-/// yaw/pitch/roll **in degrees, post axis-mapping**.
+/// yaw/pitch/roll **in degrees, post axis-mapping**, `position` = X/Y/Z in
+/// meters (zero for 3-DoF / IMU mode; real for 6-DoF / visual mode).
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub t: f64,
     pub ypr_deg: [f64; 3],
+    pub position: [f64; 3],
+}
+
+impl Frame {
+    /// 3-DoF frame (position fixed at origin).
+    pub fn new_3dof(t: f64, ypr_deg: [f64; 3]) -> Self {
+        Frame { t, ypr_deg, position: [0.0; 3] }
+    }
 }
 
 /// Rate gate: allow an action at most every `interval`. First call passes.
@@ -119,9 +128,21 @@ impl UdpSink {
         let pitch = wire_value(frame.ypr_deg[1], self.units);
         let roll = wire_value(frame.ypr_deg[2], self.units);
         // [TX, TY, TZ, Yaw, Pitch, Roll, 1.0, 0, 0, 0]
-        // X/Y/Z = 0 (3-DoF); field 6 = pose-valid/confidence default;
-        // fields 7-9 reserved (ignored by stock Opentrack).
-        let vals = [0.0, 0.0, 0.0, yaw, pitch, roll, 1.0, 0.0, 0.0, 0.0];
+        // X/Y/Z in CENTIMETERS (Opentrack's FreeTrack-derived translation
+        // convention — verified in opentrack source; see spec §4.2 note);
+        // field 6 = pose-valid/confidence default; fields 7-9 reserved.
+        let vals = [
+            frame.position[0] * 100.0,
+            frame.position[1] * 100.0,
+            frame.position[2] * 100.0,
+            yaw,
+            pitch,
+            roll,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
         let n = match self.protocol {
             Protocol::Classic => 6,
             Protocol::Extended => 10,
@@ -198,11 +219,19 @@ impl<W: Write> Sink for HudSink<W> {
             return;
         }
         let sep = if self.tty { '\r' } else { '\n' };
-        let _ = write!(
-            self.out,
-            "YAW {:6.1}°  PITCH {:6.1}°  ROLL {:6.1}°{sep}",
+        let mut line = format!(
+            "YAW {:6.1}°  PITCH {:6.1}°  ROLL {:6.1}°",
             frame.ypr_deg[0], frame.ypr_deg[1], frame.ypr_deg[2]
         );
+        // 6-DoF: append the position readout (P1 output stays identical).
+        if frame.position != [0.0; 3] {
+            line.push_str(&format!(
+                "  X {:6.2}m  Y {:6.2}m  Z {:6.2}m",
+                frame.position[0], frame.position[1], frame.position[2]
+            ));
+        }
+        line.push(sep);
+        let _ = write!(self.out, "{line}");
         let _ = self.out.flush();
     }
 
@@ -241,7 +270,7 @@ impl Sink for PoseLogSink {
             wire_value(frame.ypr_deg[1], self.units),
             wire_value(frame.ypr_deg[2], self.units),
         ];
-        if let Err(e) = jsonl::write_pose(&mut self.out, frame.t, ypr) {
+        if let Err(e) = jsonl::write_pose(&mut self.out, frame.t, ypr, frame.position) {
             self.failing = true;
             crate::log_warn!("pose log write failed, disabled: {e}");
         }
@@ -298,10 +327,7 @@ mod tests {
     use std::time::Duration;
 
     fn frame(yaw: f64, pitch: f64, roll: f64) -> Frame {
-        Frame {
-            t: 1.0,
-            ypr_deg: [yaw, pitch, roll],
-        }
+        Frame::new_3dof(1.0, [yaw, pitch, roll])
     }
 
     /// Read an n-f64 native-endian payload from a byte slice.
@@ -365,6 +391,67 @@ mod tests {
         assert!(UdpSink::bind("::1", 9, Protocol::Classic, Units::Deg, 60.0).is_ok());
         assert!(UdpSink::bind("does-not-exist.invalid", 9, Protocol::Classic, Units::Deg, 60.0)
             .is_err());
+    }
+
+    #[test]
+    fn udp_position_is_centimeters() {
+        let sink = UdpSink {
+            socket: UdpSocket::bind("127.0.0.1:0").unwrap(),
+            dest: "127.0.0.1:9".parse().unwrap(),
+            gate: RateGate::new(60.0),
+            protocol: Protocol::Classic,
+            units: Units::Deg,
+            last_warn: None,
+        };
+        // 0.25 m forward, 0.1 m right → 25 cm, 10 cm on the wire (Opentrack
+        // FreeTrack-derived translation convention).
+        let (buf, len) = sink.payload(&Frame {
+            t: 0.0,
+            ypr_deg: [0.0; 3],
+            position: [0.1, 0.0, 0.25],
+        });
+        let vals = read_f64s(&buf[..len]);
+        assert_eq!(vals[0], 10.0);
+        assert_eq!(vals[1], 0.0);
+        assert_eq!(vals[2], 25.0);
+    }
+
+    #[test]
+    fn hud_appends_position_when_nonzero() {
+        let mut buf = Vec::new();
+        let mut hud = HudSink::new(&mut buf, false, 60.0);
+        hud.write(&Frame {
+            t: 0.0,
+            ypr_deg: [1.0, 2.0, 3.0],
+            position: [0.12, -0.03, 0.5],
+        });
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("X   0.12m  Y  -0.03m  Z   0.50m"), "got {s:?}");
+        assert!(s.ends_with('\n'));
+
+        // Zero position (3-DoF): P1 output stays unchanged (no X/Y/Z).
+        let mut buf = Vec::new();
+        let mut hud = HudSink::new(&mut buf, false, 60.0);
+        hud.write(&Frame::new_3dof(0.0, [1.0, 2.0, 3.0]));
+        let s = String::from_utf8(buf).unwrap();
+        assert!(!s.contains("X "), "got {s:?}");
+    }
+
+    #[test]
+    fn pose_log_includes_position() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("nt-posepos-{}.jsonl", std::process::id()));
+        let mut sink = PoseLogSink::open(&path, Units::Deg).unwrap();
+        sink.write(&Frame {
+            t: 0.0,
+            ypr_deg: [0.0; 3],
+            position: [0.1, 0.0, 0.25],
+        });
+        drop(sink);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(content.contains("\"x\": 0.1000"), "got {content}");
+        assert!(content.contains("\"z\": 0.2500"));
     }
 
     #[test]

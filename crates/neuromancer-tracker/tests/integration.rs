@@ -275,10 +275,7 @@ fn udp_classic_roundtrip() {
     let mut sink =
         UdpSink::bind(&rx_addr.ip().to_string(), rx_addr.port(), Protocol::Classic, Units::Deg, 60.0)
             .unwrap();
-    sink.write(&Frame {
-        t: 0.0,
-        ypr_deg: [30.0, -10.0, 5.0],
-    });
+    sink.write(&Frame::new_3dof(0.0, [30.0, -10.0, 5.0]));
 
     let mut buf = [0u8; 48];
     let n = rx.recv(&mut buf).unwrap();
@@ -307,10 +304,7 @@ fn udp_extended_roundtrip() {
         60.0,
     )
     .unwrap();
-    sink.write(&Frame {
-        t: 0.0,
-        ypr_deg: [90.0, 0.0, 0.0],
-    });
+    sink.write(&Frame::new_3dof(0.0, [90.0, 0.0, 0.0]));
 
     let mut buf = [0u8; 80];
     let n = rx.recv(&mut buf).unwrap();
@@ -328,10 +322,7 @@ fn udp_extended_roundtrip() {
 fn hud_formats_degrees_line() {
     let mut buf = Vec::new();
     let mut hud = HudSink::new(&mut buf, false, 60.0);
-    hud.write(&Frame {
-        t: 0.0,
-        ypr_deg: [12.3, -4.1, 0.8],
-    });
+    hud.write(&Frame::new_3dof(0.0, [12.3, -4.1, 0.8]));
     let s = String::from_utf8(buf).unwrap();
     assert!(s.contains("YAW") && s.contains("PITCH") && s.contains("ROLL"));
     assert!(s.contains('°'));
@@ -399,6 +390,59 @@ fn cli_replay_run_terminates_cleanly() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("device=replay("), "got {stdout}");
     assert!(stdout.contains("out=disabled"));
+}
+
+#[test]
+fn visual_replay_end_to_end() {
+    use neuromancer_vo::camera::StereoRig;
+    use neuromancer_vo::synthetic::{forward_trajectory, render};
+    // Generate a short synthetic forward sequence into a temp dir.
+    let dir = std::env::temp_dir().join(format!("nt-visual-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
+    let traj = forward_trajectory(7, 0.03, 0.5);
+    for (i, pose) in traj.iter().enumerate() {
+        let (frame, _) = render(&rig, pose, 1.5);
+        std::fs::write(dir.join(format!("left_{i:04}.raw")), &frame.left).unwrap();
+        std::fs::write(dir.join(format!("right_{i:04}.raw")), &frame.right).unwrap();
+    }
+    let pose_log = dir.join("pose.jsonl");
+    let out = std::process::Command::new(bin())
+        .args([
+            "--input",
+            "visual",
+            "--replay-visual",
+            dir.to_str().unwrap(),
+            "--no-udp",
+            "--log-pose",
+            pose_log.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("input=visual"), "got {stdout}");
+
+    let content = std::fs::read_to_string(&pose_log).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    // 6-DoF: pose lines carry position, and z grows along the forward path.
+    let zs: Vec<f64> = content
+        .lines()
+        .filter_map(|l| {
+            let z = l.split("\"z\": ").nth(1)?.trim_end_matches('}').parse().ok()?;
+            Some(z)
+        })
+        .collect();
+    assert!(zs.len() >= 5, "only {} pose lines: {content}", zs.len());
+    assert!(
+        zs.last().unwrap() > &(zs.first().unwrap() + 0.05),
+        "z not growing along forward trajectory: {zs:?}"
+    );
 }
 
 #[test]

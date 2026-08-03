@@ -14,7 +14,11 @@ use neuromancer_tracker::cli::{self, Config, ParseOutcome};
 use neuromancer_tracker::imu::{ArDriversSource, ImuError, ImuSource, ReplaySource};
 use neuromancer_tracker::log;
 use neuromancer_tracker::output::{Frame, HudSink, ImuLogSink, PoseLogSink, Sink, UdpSink};
+use neuromancer_tracker::visual::{ReplayVisualSource, SlamCameraSource, VisualSource};
 use neuromancer_tracker::{log_error, log_info, log_warn};
+use neuromancer_vo::camera::StereoRig;
+use neuromancer_vo::pipeline::VoPipeline;
+use neuromancer_vo::stereo::StereoMatcher;
 
 /// Ctrl-C press counter: 1 = graceful shutdown requested, ≥2 = force exit.
 static CTRL_C: AtomicUsize = AtomicUsize::new(0);
@@ -47,14 +51,10 @@ fn run(cfg: Config) -> ExitCode {
     // Apply the requested log verbosity first — everything below is gated.
     log::set_level(cfg.log_level);
 
-    // P2 input switch: only `imu` is wired yet. `visual` (6-DoF, IMU off)
-    // lands with the neuromancer-vo pipeline (spec Appendix D, milestones
-    // M2–M7); `imu+visual` fusion is P2b.
+    // P2 input switch: `visual` (6-DoF, IMU fully off) runs the stereo VO
+    // pipeline; `imu+visual` fusion is P2b.
     if cfg.input_source == cli::InputSource::Visual {
-        log_error!(
-            "error: --input visual is under construction (P2 stereo VO, spec Appendix D) — use --input imu"
-        );
-        return ExitCode::from(1);
+        return run_visual(cfg);
     }
 
     // --- Step 2/3: open the IMU source (exit 1 on failure) ---------------
@@ -85,51 +85,10 @@ fn run(cfg: Config) -> ExitCode {
     };
 
     // --- Step 5: sinks (UDP bind failure: warn + continue, spec §3.2) -----
-    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
-    if !cfg.no_udp {
-        match UdpSink::bind(&cfg.host, cfg.port, cfg.protocol, cfg.units, cfg.udp_rate) {
-            Ok(s) => sinks.push(Box::new(s)),
-            Err(e) => log_warn!(
-                "UDP output disabled — cannot bind sender to {}:{}: {e}",
-                cfg.host, cfg.port
-            ),
-        }
-    }
-    if cfg.hud {
-        sinks.push(Box::new(HudSink::<std::io::Stdout>::stdout(cfg.hud_rate)));
-    }
-    if let Some(path) = &cfg.log_pose {
-        match PoseLogSink::open(path, cfg.units) {
-            Ok(s) => sinks.push(Box::new(s)),
-            Err(e) => log_warn!(
-                "pose log disabled — cannot open {}: {e}",
-                path.display()
-            ),
-        }
-    }
-    let mut imu_log = match &cfg.log_imu {
-        Some(path) => match ImuLogSink::open(path) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                log_warn!("IMU log disabled — cannot open {}: {e}", path.display());
-                None
-            }
-        },
-        None => None,
-    };
+    let (mut sinks, mut imu_log) = build_sinks(&cfg);
 
     // --- Signal handling (spec §3.5) ---------------------------------------
-    if let Err(e) = ctrlc::set_handler(|| {
-        let n = CTRL_C.fetch_add(1, Ordering::SeqCst) + 1;
-        if n >= 2 {
-            // Second Ctrl-C: immediate exit 1. Note: `process::exit` skips
-            // destructors, so any buffered log lines are lost here — flushing
-            // from a signal handler is not async-signal-safe, accepted trade-off.
-            std::process::exit(1);
-        }
-    }) {
-        log_warn!("cannot install Ctrl-C handler: {e}");
-    }
+    install_signal_handler();
 
     // --- Startup confirmation line (spec §3.2) -----------------------------
     let udp_out = if cfg.no_udp {
@@ -282,10 +241,7 @@ fn run(cfg: Config) -> ExitCode {
         let mut ypr_deg = quat_to_ypr(q).map(f64::to_degrees);
         axis_map.apply(&mut ypr_deg);
 
-        let frame = Frame {
-            t: sample.t,
-            ypr_deg,
-        };
+        let frame = Frame::new_3dof(sample.t, ypr_deg);
         for sink in sinks.iter_mut() {
             sink.write(&frame);
         }
@@ -304,6 +260,149 @@ fn run(cfg: Config) -> ExitCode {
 
     // --- Clean shutdown (flush logs via Drop, exit 0) ----------------------
     drop(imu_log);
+    drop(sinks);
+    log_info!("tracker exited");
+    ExitCode::SUCCESS
+}
+
+/// Build the output sinks from the config (shared by imu and visual modes).
+fn build_sinks(cfg: &Config) -> (Vec<Box<dyn Sink>>, Option<ImuLogSink>) {
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+    if !cfg.no_udp {
+        match UdpSink::bind(&cfg.host, cfg.port, cfg.protocol, cfg.units, cfg.udp_rate) {
+            Ok(s) => sinks.push(Box::new(s)),
+            Err(e) => log_warn!(
+                "UDP output disabled — cannot bind sender to {}:{}: {e}",
+                cfg.host, cfg.port
+            ),
+        }
+    }
+    if cfg.hud {
+        sinks.push(Box::new(HudSink::<std::io::Stdout>::stdout(cfg.hud_rate)));
+    }
+    if let Some(path) = &cfg.log_pose {
+        match PoseLogSink::open(path, cfg.units) {
+            Ok(s) => sinks.push(Box::new(s)),
+            Err(e) => log_warn!("pose log disabled — cannot open {}: {e}", path.display()),
+        }
+    }
+    let imu_log = match &cfg.log_imu {
+        Some(path) => match ImuLogSink::open(path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log_warn!("IMU log disabled — cannot open {}: {e}", path.display());
+                None
+            }
+        },
+        None => None,
+    };
+    (sinks, imu_log)
+}
+
+/// Install the Ctrl-C handler (first press = graceful, second = force exit).
+fn install_signal_handler() {
+    if let Err(e) = ctrlc::set_handler(|| {
+        let n = CTRL_C.fetch_add(1, Ordering::SeqCst) + 1;
+        if n >= 2 {
+            // Second Ctrl-C: immediate exit 1. Note: `process::exit` skips
+            // destructors, so any buffered log lines are lost here — flushing
+            // from a signal handler is not async-signal-safe, accepted trade-off.
+            std::process::exit(1);
+        }
+    }) {
+        log_warn!("cannot install Ctrl-C handler: {e}");
+    }
+}
+
+/// 6-DoF visual mode (`--input visual`): stereo frames → VO pipeline → pose
+/// → sinks. The IMU is never opened (spec Appendix D — the "IMU off" switch).
+fn run_visual(cfg: Config) -> ExitCode {
+    // --- Visual source (hardware or replay) --------------------------------
+    let mut source: Box<dyn VisualSource> = match &cfg.replay_visual {
+        Some(dir) => match ReplayVisualSource::open(dir, 640, 480) {
+            Ok(s) => Box::new(s),
+            Err(e) => {
+                log_error!("error: {e}");
+                return ExitCode::from(1);
+            }
+        },
+        None => match SlamCameraSource::open() {
+            Ok(s) => Box::new(s),
+            Err(e) => {
+                log_error!("error: {e}");
+                return ExitCode::from(1);
+            }
+        },
+    };
+
+    let (mut sinks, _) = build_sinks(&cfg);
+    install_signal_handler();
+
+    // M5: canonical rectified rig; hardware intrinsics (ar-drivers
+    // CameraDescriptor) + fisheye rectification land in M7.
+    let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
+    let mut vo = VoPipeline::new(rig, StereoMatcher::new(5, 0.5, 10.0));
+
+    let udp_out = if cfg.no_udp {
+        "disabled".to_string()
+    } else {
+        format!("{}:{}", cfg.host, cfg.port)
+    };
+    println!(
+        "device={} input=visual out={} protocol={} units={} udp_rate={}Hz hud={}",
+        source.name(),
+        udp_out,
+        match cfg.protocol {
+            cli::Protocol::Classic => "classic",
+            cli::Protocol::Extended => "extended",
+        },
+        match cfg.units {
+            cli::Units::Deg => "deg",
+            cli::Units::Rad => "rad",
+        },
+        cfg.udp_rate,
+        if cfg.hud { "on" } else { "off" },
+    );
+
+    let mut frames: u64 = 0;
+    let mut rate_reported = false;
+    loop {
+        if CTRL_C.load(Ordering::SeqCst) >= 1 {
+            log_info!("SIGINT received — shutting down cleanly");
+            break;
+        }
+        let frame = match source.next_frame() {
+            Ok(f) => f,
+            Err(e) if e == "end of visual replay" => {
+                log_info!("visual replay input exhausted — shutting down cleanly");
+                break;
+            }
+            Err(e) => {
+                log_error!("error: visual input failed: {e}");
+                return ExitCode::from(3);
+            }
+        };
+        if let Some(pose) = vo.process(&frame.left, &frame.right) {
+            let q = pose.rotation.quaternion();
+            // M5 note: camera-frame YPR; head-frame alignment (imu_to_camera)
+            // is an M7 item.
+            let ypr_deg = neuromancer_ahrs::quat_to_ypr(neuromancer_ahrs::Quat::new(q.w, q.i, q.j, q.k))
+                .map(f64::to_degrees);
+            let out = Frame {
+                t: frame.t,
+                ypr_deg,
+                position: [pose.translation.x, pose.translation.y, pose.translation.z],
+            };
+            for sink in sinks.iter_mut() {
+                sink.write(&out);
+            }
+        }
+        frames += 1;
+        if frames == 30 && !rate_reported {
+            log_info!("visual pipeline running (30 frames processed)");
+            rate_reported = true;
+        }
+    }
     drop(sinks);
     log_info!("tracker exited");
     ExitCode::SUCCESS

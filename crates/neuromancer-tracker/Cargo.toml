@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+neuromancer-vo = { path = "../neuromancer-vo" }
 # ar-drivers 0.4.3's `nreal` feature map omits `rusb`, but the Nreal Light
 # backend (nreal_light.rs) uses rusb/libusb unconditionally — enabling the
 # optional `rusb` dependency explicitly is required to compile it.

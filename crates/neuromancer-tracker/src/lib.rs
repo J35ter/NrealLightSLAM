@@ -9,3 +9,4 @@ pub mod imu;
 pub mod jsonl;
 pub mod log;
 pub mod output;
+pub mod visual;

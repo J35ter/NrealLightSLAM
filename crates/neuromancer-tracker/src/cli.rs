@@ -60,6 +60,9 @@ pub struct Config {
     pub gyro_calib: f64,
     /// Pose source (P2): `imu` (default, 3-DoF) or `visual` (6-DoF, IMU off).
     pub input_source: InputSource,
+    /// Dev/testing: raw stereo frames directory for `--input visual`
+    /// (`left_XXXX.raw` / `right_XXXX.raw`, 640×480 grayscale).
+    pub replay_visual: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -85,6 +88,7 @@ impl Default for Config {
             log_level: Level::Error,
             gyro_calib: 2.0,
             input_source: InputSource::Imu,
+            replay_visual: None,
         }
     }
 }
@@ -253,6 +257,9 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 };
             }
             "--replay" => cfg.replay = Some(PathBuf::from(it.take("--replay")?)),
+            "--replay-visual" => {
+                cfg.replay_visual = Some(PathBuf::from(it.take("--replay-visual")?));
+            }
             "--log-level" => {
                 let raw = it.take("--log-level")?;
                 cfg.log_level = Level::parse(&raw).ok_or_else(|| {
@@ -286,6 +293,13 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
             other => return Err(format!("unknown option: {other}")),
         }
     }
+    // Cross-validation: replay modes belong to their input source.
+    if cfg.replay.is_some() && cfg.input_source == InputSource::Visual {
+        return Err("--replay (IMU log) requires --input imu".to_string());
+    }
+    if cfg.replay_visual.is_some() && cfg.input_source != InputSource::Visual {
+        return Err("--replay-visual requires --input visual".to_string());
+    }
     Ok(ParseOutcome::Run(cfg))
 }
 
@@ -318,6 +332,7 @@ pub fn usage() -> &'static str {
         "    --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)\n",
         "    --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)\n",
         "    --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU off)\n",
+        "    --replay-visual <DIR> Dev/testing: stereo frames dir for --input visual\n",
         "    --version            Print version and exit\n",
         "    --help               Print help and exit\n",
     )
@@ -440,6 +455,9 @@ mod tests {
         // Fusion is P2b — explicitly rejected for now.
         assert!(run(&["--input", "both"]).is_err());
         assert!(run(&["--input", "imu+visual"]).is_err());
+        // Replay modes must match the input source.
+        assert!(run(&["--replay-visual", "/tmp/v", "--input", "imu"]).is_err());
+        assert!(run(&["--replay", "/tmp/i.jsonl", "--input", "visual"]).is_err());
     }
 
     #[test]

@@ -30,13 +30,13 @@ pub fn write_imu(out: &mut impl Write, s: &ImuSample) -> io::Result<()> {
 }
 
 /// Write one filtered pose as a JSONL line. `ypr` uses the selected wire
-/// units (matches `--units`).
-pub fn write_pose(out: &mut impl Write, t: f64, ypr: [f64; 3]) -> io::Result<()> {
-    let mut line = String::with_capacity(96);
+/// units (matches `--units`); `position` is in meters.
+pub fn write_pose(out: &mut impl Write, t: f64, ypr: [f64; 3], position: [f64; 3]) -> io::Result<()> {
+    let mut line = String::with_capacity(140);
     write!(
         line,
-        "{{\"t\": {:.6}, \"yaw\": {:.6}, \"pitch\": {:.6}, \"roll\": {:.6}}}",
-        t, ypr[0], ypr[1], ypr[2]
+        "{{\"t\": {:.6}, \"yaw\": {:.6}, \"pitch\": {:.6}, \"roll\": {:.6}, \"x\": {:.4}, \"y\": {:.4}, \"z\": {:.4}}}",
+        t, ypr[0], ypr[1], ypr[2], position[0], position[1], position[2]
     )
     .expect("formatting to String cannot fail");
     writeln!(out, "{line}")
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn pose_roundtrip() {
         let mut buf = Vec::new();
-        write_pose(&mut buf, 12.5, [0.21, -0.07, 0.01]).unwrap();
+        write_pose(&mut buf, 12.5, [0.21, -0.07, 0.01], [0.0; 3]).unwrap();
         let line = String::from_utf8(buf).unwrap();
         assert!(line.contains("\"yaw\": 0.210000"));
         assert!(line.contains("\"roll\": 0.010000"));
