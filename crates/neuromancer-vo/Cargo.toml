@@ -1,0 +1,11 @@
+[package]
+name = "neuromancer-vo"
+description = "Pure-Rust stereo visual odometry for the Nreal Light head tracker (Phase 2, 6-DoF)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Already in the workspace tree via ar-drivers; gives Isometry3/Point3 types
+# that interoperate with ar-drivers' CameraDescriptor transforms.
+nalgebra = "0.32"

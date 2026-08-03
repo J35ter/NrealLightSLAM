@@ -47,6 +47,16 @@ fn run(cfg: Config) -> ExitCode {
     // Apply the requested log verbosity first — everything below is gated.
     log::set_level(cfg.log_level);
 
+    // P2 input switch: only `imu` is wired yet. `visual` (6-DoF, IMU off)
+    // lands with the neuromancer-vo pipeline (spec Appendix D, milestones
+    // M2–M7); `imu+visual` fusion is P2b.
+    if cfg.input_source == cli::InputSource::Visual {
+        log_error!(
+            "error: --input visual is under construction (P2 stereo VO, spec Appendix D) — use --input imu"
+        );
+        return ExitCode::from(1);
+    }
+
     // --- Step 2/3: open the IMU source (exit 1 on failure) ---------------
     let mut source: Box<dyn ImuSource> = match &cfg.replay {
         Some(path) => match ReplaySource::open(path, true) {

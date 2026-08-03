@@ -2,7 +2,7 @@
 
 **Document owner:** Neuromancer (Hermes, default profile)
 **Prepared for:** Codex CLI (DeepSeek V4 Flash backend)
-**Status:** Complete — reviewed by Neuromancer 2026-08-01, approved by V (sections 1–4), Codex-ready. **Phase 1 implemented 2026-08-03 — see Appendix C (implementation handoff); V hardware testing scheduled 2026-08-04**
+**Status:** Complete — reviewed by Neuromancer 2026-08-01, approved by V (sections 1–4), Codex-ready. **Phase 1 implemented 2026-08-03 — see Appendix C (implementation handoff); V hardware testing scheduled 2026-08-04. Phase 2 started 2026-08-04 — see Appendix D (P2 visual-only plan, approved); P1 pinned as git tag `v0.1.0`**
 **Last updated:** 2026-08-01
 
 ---
@@ -684,3 +684,63 @@ target/release/neuromancer-tracker --log-imu /tmp/imu.jsonl --hud
   signal handler is not async-signal-safe — accepted trade-off).
 - Windows USB (P4) risk unchanged: ar-drivers/libusb + WinUSB via Zadig (§5.4).
 - IMU/pose logs are append-only with no rotation (§5.7).
+
+## Appendix D — P2 visual-only plan (approved 2026-08-04)
+
+Approved by V: **pure-Rust stereo visual odometry** as the P2a position source,
+with an `--input imu|visual` switch. `imu` = Phase-1 3-DoF behavior exactly;
+`visual` = 6-DoF pose fully from vision (the "turn the IMU off" switch — P1
+had none); `imu+visual` fusion is P2b and reserved.
+
+### D.1 Feasibility (verified in ar-drivers 0.4.3 source)
+
+- `NrealLightSlamCamera::new()` + `get_frame(timeout)` → `NrealLightSlamCameraFrame
+  { left: Vec<u8> (640×480 grayscale), right: Vec<u8>, timestamp: u64 }`,
+  ~30 fps (UVC frame interval 333333×100 ns). "Only one instance can be
+  alive at a time" — IMU+camera coexistence is a spike item.
+- `cameras()` → `CameraDescriptor` per camera: intrinsic matrix, distortion
+  (k1..k5), `leftcam_q_rightcam` stereo extrinsics, `imu_to_camera` — all
+  needed for rectification, triangulation, and **metric scale** (stereo
+  baseline), which directly addresses the X/Z drift that killed the original
+  SLAM attempt (§1.1).
+
+### D.2 Architecture
+
+```
+SlamCamera ──▶ [VisualSource] ──▶ rectify ──▶ FAST ──▶ KLT ──▶ stereo match
+    640×480 stereo @30fps                                   │
+                                              triangulate (metric depth)
+                                                        ▼
+                              PnP + RANSAC ──▶ incremental 6-DoF pose
+                                                        │
+                                     ┌───────────────────┴──────────┐
+                                     ▼  UDP TX/TY/TZ real  HUD X/Y/Z  pose log position
+```
+
+- New crate `neuromancer-vo` (pure Rust, nalgebra — already in the tree via
+  ar-drivers; no C++ deps, keeps P4 Windows cross-compile sane).
+- Pose source abstraction so `imu` and `visual` share the output layer.
+
+### D.3 Scope & milestones
+
+| M | Deliverable | Verification |
+|---|-------------|--------------|
+| M1 | `neuromancer-vo`: CameraModel + rectification + **synthetic stereo generator**; `--input imu|visual` switch | unit tests (projection round-trip, rectified epipolar geometry) |
+| M2 | FAST corner detection + KLT optical flow | synthetic frame pair tests |
+| M3 | Epipolar stereo matching + triangulation (metric depth) | depth vs known scene error |
+| M4 | PnP + RANSAC motion → incremental 6-DoF pose | synthetic trajectory: pose error vs ground truth |
+| M5 | Outputs per §4.6 (position in frames/UDP/HUD/pose log); `--input visual` end-to-end | integration tests + live replay |
+| M6 | `--record-visual` / `--replay-visual` (mirror `--log-imu`/`--replay`) | recorded frame replay |
+| M7 | Hardware spike on .240: frames @30 fps, intrinsics sanity, IMU+camera coexistence | physical |
+
+### D.4 Risks (flagged, per spec "honest expectation")
+
+- **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's
+  "acceptable drift" bar as a stepping stone — the real cure is IMU fusion
+  (P2b, ESKF as originally planned).
+- Fisheye distortion/rectification quality (intrinsics from device config —
+  validate in M7).
+- Low-texture scenes starve FAST/KLT.
+- CPU envelope: VO will exceed P1's "<10% of one core" target; acceptable
+  for P2, revisit in P4.
+- `ar-drivers` camera API maturity and IMU+camera exclusivity.

@@ -3,6 +3,18 @@
 All notable changes per release. Semver per spec §5.6
 (`neuromancer-tracker` + `neuromancer-ahrs` share the workspace version).
 
+## Unreleased — Phase 2 (6-DoF, in progress)
+
+### Added (milestone M1, spec Appendix D)
+
+- `neuromancer-vo` crate (pure Rust, nalgebra): pinhole `CameraModel`,
+  rectified `StereoRig` (metric scale via baseline), and a **synthetic
+  stereo renderer** (textured plane, ground-truth depth + trajectory) as the
+  CI-equivalent for VO tests. 7 unit tests.
+- `--input imu|visual` switch (default `imu`; `visual` = 6-DoF with the IMU
+  off — wired to a clear "under construction" error until the VO pipeline
+  lands; `imu+visual` fusion rejected as P2b).
+
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 
 First pinned release: stable IMU-only 3-DoF tracking, verified on real

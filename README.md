@@ -80,6 +80,7 @@ neuromancer-tracker [OPTIONS]
   --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB
   --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)
   --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)
+  --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU off — under construction)
   --version            Print version and exit
   --help               Print help and exit
 ```

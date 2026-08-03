@@ -21,6 +21,14 @@ pub enum Units {
     Rad,
 }
 
+/// Pose input source (P2). `Imu` = Phase-1 3-DoF; `Visual` = 6-DoF from
+/// stereo visual odometry with the IMU fully off (the "IMU off" switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputSource {
+    Imu,
+    Visual,
+}
+
 /// Effective tracker configuration (spec §3.4 + resolved open questions).
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -50,6 +58,8 @@ pub struct Config {
     /// (`0` disables). Default 2.0 — removes residual turn-on bias that
     /// otherwise integrates into linear yaw drift (measured ~15°/60 s).
     pub gyro_calib: f64,
+    /// Pose source (P2): `imu` (default, 3-DoF) or `visual` (6-DoF, IMU off).
+    pub input_source: InputSource,
 }
 
 impl Default for Config {
@@ -74,6 +84,7 @@ impl Default for Config {
             replay: None,
             log_level: Level::Error,
             gyro_calib: 2.0,
+            input_source: InputSource::Imu,
         }
     }
 }
@@ -255,6 +266,23 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 let raw = it.take("--gyro-calib")?;
                 cfg.gyro_calib = parse_nonneg(&raw, "--gyro-calib")?;
             }
+            "--input" => {
+                let raw = it.take("--input")?;
+                cfg.input_source = match raw.trim().to_ascii_lowercase().as_str() {
+                    "imu" => InputSource::Imu,
+                    "visual" => InputSource::Visual,
+                    "both" | "imu+visual" | "fusion" => {
+                        return Err(
+                            "--input imu+visual (fusion) is P2b and not yet implemented".to_string()
+                        )
+                    }
+                    other => {
+                        return Err(format!(
+                            "invalid value for --input: {other:?} (imu|visual)"
+                        ))
+                    }
+                };
+            }
             other => return Err(format!("unknown option: {other}")),
         }
     }
@@ -289,6 +317,7 @@ pub fn usage() -> &'static str {
         "    --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB\n",
         "    --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)\n",
         "    --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)\n",
+        "    --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU off)\n",
         "    --version            Print version and exit\n",
         "    --help               Print help and exit\n",
     )
@@ -321,6 +350,7 @@ mod tests {
         assert!(c.replay.is_none());
         assert_eq!(c.log_level, Level::Error);
         assert_eq!(c.gyro_calib, 2.0);
+        assert_eq!(c.input_source, InputSource::Imu);
     }
 
     #[test]
@@ -394,6 +424,22 @@ mod tests {
         assert!(run(&["--log-level", "bogus"]).is_err());
         assert!(run(&["--gyro-calib", "-1"]).is_err());
         assert!(run(&["--gyro-calib", "nan"]).is_err());
+    }
+
+    #[test]
+    fn input_source_flag() {
+        let ParseOutcome::Run(c) = run(&["--input", "visual"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(c.input_source, InputSource::Visual);
+        let ParseOutcome::Run(c) = run(&["--input", "imu"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(c.input_source, InputSource::Imu);
+        assert!(run(&["--input", "bogus"]).is_err());
+        // Fusion is P2b — explicitly rejected for now.
+        assert!(run(&["--input", "both"]).is_err());
+        assert!(run(&["--input", "imu+visual"]).is_err());
     }
 
     #[test]
