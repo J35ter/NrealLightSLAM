@@ -743,14 +743,17 @@ SlamCamera ──▶ [VisualSource] ──▶ rectify ──▶ FAST ──▶ K
 All hardware checks passed (clean exit, no hangs); the spike exposed two
 things that shape P2a's remaining work:
 
-- **SLAM camera frame rate is unstable — 6–28 fps run-to-run, not the
-  spec's ~30 fps.** Two runs with identical flags (`--input visual
-  --no-udp`) measured 6 fps; the 28 fps run had `--record-visual` on.
-  Replay of the recorded 357-frame session runs at ~990 fps (CPU-bound,
-  unpaced), so the variance is in the camera/USB delivery, not the VO
+- **SLAM camera frame rate is ~6 fps in practice, not the spec's ~30 fps.**
+  Three of four runs (with and without `--record-visual`) measured 6 fps;
+  one run measured 28 fps — a rare burst. `ar-drivers` configures the
+  sensor for 30 fps via UVC (`bFrameInterval = 333333` in
+  `ENABLE_STREAMING_PACKET`) but the device delivers complete frames at
+  ~6 fps. Replay of a recorded session runs at ~990 fps (CPU-bound,
+  unpaced), so the variance is in camera/USB delivery, not the VO
   pipeline or HUD. The pipeline uses per-frame timestamps, so it degrades
-  gracefully — but "30 fps" is not a safe assumption; treat ~6–30 fps as
-  the real envelope and design VO/CPU headroom for the worst case.
+  gracefully — but "30 fps" is not a safe assumption; treat ~6 fps as the
+  real envelope and design VO/CPU headroom for it. Diagnosing the device
+  rate (per-frame timestamp log over a longer capture) is part of M8.
 - **Intrinsics are not yet wired** (known): VO runs on the hardcoded
   rectified rig (`fx=fy=500`, baseline 0.12 m), producing km-scale pose
   garbage on real scenes — expected, and the reason M8 (CameraDescriptor
