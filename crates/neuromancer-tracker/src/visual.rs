@@ -140,3 +140,42 @@ pub fn replay_visual_frames(dir: &Path) -> usize {
         })
         .unwrap_or(0)
 }
+
+/// Writes incoming stereo frames to a directory (`left_XXXX.raw` /
+/// `right_XXXX.raw` — the layout `--replay-visual` reads). Best-effort:
+/// a write failure logs a warning once and disables recording.
+pub struct VisualRecorder {
+    dir: PathBuf,
+    index: usize,
+    failing: bool,
+}
+
+impl VisualRecorder {
+    pub fn open(dir: &Path) -> Result<Self, String> {
+        fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        Ok(VisualRecorder {
+            dir: dir.to_path_buf(),
+            index: 0,
+            failing: false,
+        })
+    }
+
+    pub fn record(&mut self, frame: &VisualFrame) {
+        if self.failing {
+            return;
+        }
+        let write = |side: &str, data: &[u8]| -> std::io::Result<()> {
+            fs::write(self.dir.join(format!("{side}_{:04}.raw", self.index)), data)
+        };
+        if let Err(e) = write("left", &frame.left).and_then(|_| write("right", &frame.right)) {
+            self.failing = true;
+            crate::log_warn!("visual recording disabled after write failure: {e}");
+            return;
+        }
+        self.index += 1;
+    }
+
+    pub fn frames(&self) -> usize {
+        self.index
+    }
+}

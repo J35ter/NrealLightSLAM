@@ -14,7 +14,7 @@ use neuromancer_tracker::cli::{self, Config, ParseOutcome};
 use neuromancer_tracker::imu::{ArDriversSource, ImuError, ImuSource, ReplaySource};
 use neuromancer_tracker::log;
 use neuromancer_tracker::output::{Frame, HudSink, ImuLogSink, PoseLogSink, Sink, UdpSink};
-use neuromancer_tracker::visual::{ReplayVisualSource, SlamCameraSource, VisualSource};
+use neuromancer_tracker::visual::{ReplayVisualSource, SlamCameraSource, VisualRecorder, VisualSource};
 use neuromancer_tracker::{log_error, log_info, log_warn};
 use neuromancer_vo::camera::StereoRig;
 use neuromancer_vo::pipeline::VoPipeline;
@@ -30,7 +30,7 @@ const MAX_DT: f64 = 0.1;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cfg = match cli::parse(args) {
-        Ok(ParseOutcome::Run(c)) => c,
+        Ok(ParseOutcome::Run(c)) => *c,
         Ok(ParseOutcome::Help) => {
             print!("{}", cli::usage());
             return ExitCode::SUCCESS;
@@ -338,6 +338,20 @@ fn run_visual(cfg: Config) -> ExitCode {
     let (mut sinks, _) = build_sinks(&cfg);
     install_signal_handler();
 
+    // Optional raw-frame recording (P2 --record-visual).
+    let mut recorder = match &cfg.record_visual {
+        Some(dir) => match VisualRecorder::open(dir) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log_warn!("visual recording disabled: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let mut recorded = 0usize;
+    let mut record_notice = true;
+
     // M5: canonical rectified rig; hardware intrinsics (ar-drivers
     // CameraDescriptor) + fisheye rectification land in M7.
     let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
@@ -382,6 +396,15 @@ fn run_visual(cfg: Config) -> ExitCode {
                 return ExitCode::from(3);
             }
         };
+        // Record the raw stereo frames before processing (P2).
+        if let Some(r) = &mut recorder {
+            r.record(&frame);
+            if record_notice {
+                log_info!("recording visual frames to {}", cfg.record_visual.as_ref().unwrap().display());
+                record_notice = false;
+            }
+            recorded = r.frames();
+        }
         if let Some(pose) = vo.process(&frame.left, &frame.right) {
             let q = pose.rotation.quaternion();
             // M5 note: camera-frame YPR; head-frame alignment (imu_to_camera)
@@ -402,6 +425,9 @@ fn run_visual(cfg: Config) -> ExitCode {
             log_info!("visual pipeline running (30 frames processed)");
             rate_reported = true;
         }
+    }
+    if recorder.is_some() {
+        log_info!("recorded {recorded} visual frames");
     }
     drop(sinks);
     log_info!("tracker exited");

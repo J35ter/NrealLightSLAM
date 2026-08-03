@@ -392,13 +392,12 @@ fn cli_replay_run_terminates_cleanly() {
     assert!(stdout.contains("out=disabled"));
 }
 
-#[test]
-fn visual_replay_end_to_end() {
+/// Write a 7-frame synthetic forward stereo sequence into `dir` and return
+/// the rig used to render it.
+fn write_synthetic_sequence(dir: &std::path::Path) -> neuromancer_vo::camera::StereoRig {
     use neuromancer_vo::camera::StereoRig;
     use neuromancer_vo::synthetic::{forward_trajectory, render};
-    // Generate a short synthetic forward sequence into a temp dir.
-    let dir = std::env::temp_dir().join(format!("nt-visual-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir).unwrap();
     let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
     let traj = forward_trajectory(7, 0.03, 0.5);
     for (i, pose) in traj.iter().enumerate() {
@@ -406,6 +405,13 @@ fn visual_replay_end_to_end() {
         std::fs::write(dir.join(format!("left_{i:04}.raw")), &frame.left).unwrap();
         std::fs::write(dir.join(format!("right_{i:04}.raw")), &frame.right).unwrap();
     }
+    rig
+}
+
+#[test]
+fn visual_replay_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("nt-visual-{}", std::process::id()));
+    write_synthetic_sequence(&dir);
     let pose_log = dir.join("pose.jsonl");
     let out = std::process::Command::new(bin())
         .args([
@@ -443,6 +449,45 @@ fn visual_replay_end_to_end() {
         zs.last().unwrap() > &(zs.first().unwrap() + 0.05),
         "z not growing along forward trajectory: {zs:?}"
     );
+}
+
+#[test]
+fn visual_record_replay_roundtrip() {
+    // Replay a synthetic sequence while recording it; the recorded directory
+    // must contain the same number of frames (left+right pairs).
+    let src = std::env::temp_dir().join(format!("nt-vsrc-{}", std::process::id()));
+    let dst = std::env::temp_dir().join(format!("nt-vdst-{}", std::process::id()));
+    write_synthetic_sequence(&src);
+    let out = std::process::Command::new(bin())
+        .args([
+            "--input",
+            "visual",
+            "--replay-visual",
+            src.to_str().unwrap(),
+            "--record-visual",
+            dst.to_str().unwrap(),
+            "--no-udp",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lefts = std::fs::read_dir(&dst)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("left_"))
+        .count();
+    let rights = std::fs::read_dir(&dst)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("right_"))
+        .count();
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&dst);
+    assert_eq!(lefts, 7, "recorded {lefts} left frames");
+    assert_eq!(rights, 7, "recorded {rights} right frames");
 }
 
 #[test]

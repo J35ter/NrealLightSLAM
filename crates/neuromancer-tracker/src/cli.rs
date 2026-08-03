@@ -63,6 +63,9 @@ pub struct Config {
     /// Dev/testing: raw stereo frames directory for `--input visual`
     /// (`left_XXXX.raw` / `right_XXXX.raw`, 640×480 grayscale).
     pub replay_visual: Option<PathBuf>,
+    /// P2: record the incoming visual frames to a directory (raw stereo,
+    /// same layout as `--replay-visual` reads). Requires `--input visual`.
+    pub record_visual: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -89,13 +92,14 @@ impl Default for Config {
             gyro_calib: 2.0,
             input_source: InputSource::Imu,
             replay_visual: None,
+            record_visual: None,
         }
     }
 }
 
 /// Result of a successful parse.
 pub enum ParseOutcome {
-    Run(Config),
+    Run(Box<Config>),
     Help,
     Version,
 }
@@ -260,6 +264,9 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
             "--replay-visual" => {
                 cfg.replay_visual = Some(PathBuf::from(it.take("--replay-visual")?));
             }
+            "--record-visual" => {
+                cfg.record_visual = Some(PathBuf::from(it.take("--record-visual")?));
+            }
             "--log-level" => {
                 let raw = it.take("--log-level")?;
                 cfg.log_level = Level::parse(&raw).ok_or_else(|| {
@@ -300,7 +307,10 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
     if cfg.replay_visual.is_some() && cfg.input_source != InputSource::Visual {
         return Err("--replay-visual requires --input visual".to_string());
     }
-    Ok(ParseOutcome::Run(cfg))
+    if cfg.record_visual.is_some() && cfg.input_source != InputSource::Visual {
+        return Err("--record-visual requires --input visual".to_string());
+    }
+    Ok(ParseOutcome::Run(Box::new(cfg)))
 }
 
 /// Full usage/help text (spec §3.4 + resolved additions).
@@ -333,6 +343,7 @@ pub fn usage() -> &'static str {
         "    --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)\n",
         "    --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU off)\n",
         "    --replay-visual <DIR> Dev/testing: stereo frames dir for --input visual\n",
+        "    --record-visual <DIR> Record incoming stereo frames to a directory (P2)\n",
         "    --version            Print version and exit\n",
         "    --help               Print help and exit\n",
     )
@@ -458,6 +469,7 @@ mod tests {
         // Replay modes must match the input source.
         assert!(run(&["--replay-visual", "/tmp/v", "--input", "imu"]).is_err());
         assert!(run(&["--replay", "/tmp/i.jsonl", "--input", "visual"]).is_err());
+        assert!(run(&["--record-visual", "/tmp/v", "--input", "imu"]).is_err());
     }
 
     #[test]
