@@ -14,11 +14,9 @@ use super::frame::{DepthMap, StereoFrame};
 /// would create near-degenerate LK minima. Any `(x, y)` plane coordinate
 /// (meters) → 0..255.
 pub fn texture(x: f64, y: f64) -> u8 {
-    let n1 = value_noise(x / 0.03, y / 0.03);
-    let n2 = value_noise(x / 0.12, y / 0.12);
-    // 5-level quantization of a fine octave: hard edges ~6.5 px apart.
-    let hard = (value_noise(x / 0.02, y / 0.02) * 5.0).floor() / 5.0;
-    ((n1 * 0.3 + n2 * 0.2 + hard * 0.5) * 255.0).clamp(0.0, 255.0) as u8
+    let n1 = value_noise(x / 0.02, y / 0.02);
+    let n2 = value_noise(x / 0.08, y / 0.08);
+    ((n1 * 0.8 + n2 * 0.2) * 255.0).clamp(0.0, 255.0) as u8
 }
 
 /// Deterministic hash of integer lattice coordinates → [0, 1).
