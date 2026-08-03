@@ -720,18 +720,21 @@ SlamCamera ──▶ [VisualSource] ──▶ rectify ──▶ FAST ──▶ K
 - New crate `neuromancer-vo` (pure Rust, nalgebra — already in the tree via
   ar-drivers; no C++ deps, keeps P4 Windows cross-compile sane).
 - Pose source abstraction so `imu` and `visual` share the output layer.
+- Motion estimation uses **RANSAC + 3-point Umeyama (3D–3D) with Gauss–Newton
+  reprojection refinement** instead of DLT-PnP: DLT-PnP degenerates on planar
+  scenes, and the pipeline has metric stereo depth in both frames (M4 note).
 
 ### D.3 Scope & milestones
 
-| M | Deliverable | Verification |
-|---|-------------|--------------|
-| M1 | `neuromancer-vo`: CameraModel + rectification + **synthetic stereo generator**; `--input imu|visual` switch | unit tests (projection round-trip, rectified epipolar geometry) |
-| M2 | FAST corner detection + KLT optical flow | synthetic frame pair tests |
-| M3 | Epipolar stereo matching + triangulation (metric depth) | depth vs known scene error |
-| M4 | PnP + RANSAC motion → incremental 6-DoF pose | synthetic trajectory: pose error vs ground truth |
-| M5 | Outputs per §4.6 (position in frames/UDP/HUD/pose log); `--input visual` end-to-end | integration tests + live replay |
-| M6 | `--record-visual` / `--replay-visual` (mirror `--log-imu`/`--replay`) | recorded frame replay |
-| M7 | Hardware spike on .240: frames @30 fps, intrinsics sanity, IMU+camera coexistence | physical |
+| M | Deliverable | Verification | Status |
+|---|-------------|--------------|--------|
+| M1 | `neuromancer-vo`: CameraModel + rectification + **synthetic stereo generator**; `--input imu|visual` switch | unit tests (projection round-trip, rectified epipolar geometry) | **DONE 2026-08-04** |
+| M2 | FAST corner detection + KLT optical flow | synthetic frame pair tests | **DONE** — single-level LK (pyramid removed after testing: blurred coarse level biased estimates); 1.33/3.3/6.67 px motions at ≥90/≥90/≥70% inliers |
+| M3 | Epipolar stereo matching + triangulation (metric depth) | depth vs known scene error | **DONE** — median relative depth error < 2% |
+| M4 | Motion estimation + incremental 6-DoF pose | synthetic trajectory: pose error vs ground truth | **DONE** — RANSAC + Umeyama 3D-3D + Gauss–Newton reprojection refinement (replaces DLT-PnP: planar degeneracy, and stereo depth exists in both frames); < 5 mm/< 5 mrad well-constrained regime |
+| M5 | Outputs per §4.6 (position in frames/UDP/HUD/pose log); `--input visual` end-to-end | integration tests + live replay | **DONE** — position in meters; UDP TX/TY/TZ in **cm** (Opentrack convention); HUD X/Y/Z; pose log x/y/z |
+| M6 | `--record-visual` / `--replay-visual` (mirror `--log-imu`/`--replay`) | recorded frame replay | **DONE** — round-trip verified |
+| M7 | Hardware spike on .240: frames @30 fps, intrinsics sanity, IMU+camera coexistence | physical | **PENDING — needs glasses (V)** |
 
 ### D.4 Risks (flagged, per spec "honest expectation")
 

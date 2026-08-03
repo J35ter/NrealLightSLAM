@@ -80,7 +80,9 @@ neuromancer-tracker [OPTIONS]
   --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB
   --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)
   --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)
-  --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU off — under construction)
+  --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU fully off)
+  --replay-visual <DIR> Dev/testing: stereo frames dir for --input visual
+  --record-visual <DIR> Record incoming stereo frames to a directory (P2)
   --version            Print version and exit
   --help               Print help and exit
 ```
@@ -116,6 +118,26 @@ neuromancer-tracker [OPTIONS]
 
 - First Ctrl-C → flush logs, clean exit 0. Second Ctrl-C → immediate exit 1.
 - Startup prints a confirmation line: `device=... kp=... ki=... out=... protocol=... units=... udp_rate=...Hz hud=...`.
+
+## Phase 2 — visual 6-DoF (`--input visual`)
+
+Stereo visual odometry from the Nreal Light SLAM cameras (spec Appendix D):
+640×480 grayscale stereo at ~30 fps → FAST corners → KLT tracking → epipolar
+stereo depth → RANSAC motion → incremental 6-DoF pose. The IMU is never
+opened in this mode.
+
+```bash
+./target/release/neuromancer-tracker --input visual --hud   # hardware cameras
+./target/release/neuromancer-tracker --input visual --replay-visual <dir> --hud
+```
+
+- `--replay-visual <DIR>` reads raw frames (`left_XXXX.raw`/`right_XXXX.raw`);
+  `--record-visual <DIR>` writes them (record a hardware session, replay it
+  offline — mirrors `--log-imu`/`--replay`).
+- Outputs are 6-DoF: UDP `TX/TY/TZ` (in **cm**, Opentrack's translation
+  convention), HUD gains `X/Y/Z` (meters), pose log gains `x/y/z`.
+- M5 uses a canonical rectified rig; hardware intrinsics + fisheye
+  rectification + head-frame alignment are the M7 hardware spike.
 
 ## Log levels (`--log-level`)
 

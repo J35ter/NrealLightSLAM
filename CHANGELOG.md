@@ -5,15 +5,40 @@ All notable changes per release. Semver per spec §5.6
 
 ## Unreleased — Phase 2 (6-DoF, in progress)
 
-### Added (milestone M1, spec Appendix D)
+### Added (milestones M1–M6, spec Appendix D)
 
 - `neuromancer-vo` crate (pure Rust, nalgebra): pinhole `CameraModel`,
-  rectified `StereoRig` (metric scale via baseline), and a **synthetic
-  stereo renderer** (textured plane, ground-truth depth + trajectory) as the
-  CI-equivalent for VO tests. 7 unit tests.
-- `--input imu|visual` switch (default `imu`; `visual` = 6-DoF with the IMU
-  off — wired to a clear "under construction" error until the VO pipeline
-  lands; `imu+visual` fusion rejected as P2b).
+  rectified `StereoRig` (metric depth = `fx·baseline/disparity`), synthetic
+  stereo renderer (aperiodic value-noise texture, ground-truth depth +
+  trajectory).
+- `--input imu|visual` switch (default `imu`): `visual` = 6-DoF with the IMU
+  fully off — the full stereo VO pipeline runs end-to-end (M5).
+- FAST-9 corner detection + single-level Lucas–Kanade optical flow (M2;
+  a coarse-to-fine pyramid was tried and removed — its blurred coarse level
+  biased estimates).
+- Epipolar stereo matching (SSD, depth-bounded disparity, subpixel) +
+  metric triangulation (M3; median depth error < 2% on synthetic).
+- Inter-frame motion estimation (M4): RANSAC over 3-point Umeyama alignment,
+  validated by reprojection, refined by Gauss–Newton against reprojection
+  error (refinement over PnP: DLT-PnP degenerates on planar scenes and stereo
+  depth exists in both frames). < 5 mm / < 5 mrad in the well-constrained
+  regime; bas-relief ambiguity for lateral motion at small rotation noted for
+  P2b IMU fusion.
+- `VoPipeline`: stateful frame-to-frame VO driver (1500-feature cap).
+- 6-DoF outputs (M5): `Frame` gains position (meters); UDP `TX/TY/TZ` real in
+  **centimeters** (Opentrack's translation convention); HUD appends `X/Y/Z`
+  when non-zero (P1 output unchanged); pose log gains `x/y/z`.
+- Visual sources: `SlamCameraSource` (hardware, ar-drivers) and
+  `ReplayVisualSource` (`--replay-visual DIR`, raw `left_XXXX.raw` /
+  `right_XXXX.raw`); `--record-visual DIR` captures them (M6, round-trip
+  verified).
+- 79 tests total; clippy clean.
+
+### Pending
+
+- M7 hardware spike (glasses on .240): SlamCamera @ ~30 fps, intrinsics
+  sanity + fisheye rectification, IMU+camera coexistence, head-frame
+  alignment (`imu_to_camera`), real-scene VO tuning.
 
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 
