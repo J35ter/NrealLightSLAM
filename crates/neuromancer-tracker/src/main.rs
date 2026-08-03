@@ -380,6 +380,7 @@ fn run_visual(cfg: Config) -> ExitCode {
 
     let mut frames: u64 = 0;
     let mut rate_reported = false;
+    let mut t_first: Option<f64> = None;
     loop {
         if CTRL_C.load(Ordering::SeqCst) >= 1 {
             log_info!("SIGINT received — shutting down cleanly");
@@ -421,8 +422,12 @@ fn run_visual(cfg: Config) -> ExitCode {
             }
         }
         frames += 1;
+        if frames == 1 {
+            t_first = Some(frame.t);
+        }
         if frames == 30 && !rate_reported {
-            log_info!("visual pipeline running (30 frames processed)");
+            let fps = 29.0 / (frame.t - t_first.unwrap_or(frame.t)).max(1e-9);
+            log_info!("visual pipeline running — measured frame rate {fps:.0} fps");
             rate_reported = true;
         }
     }
