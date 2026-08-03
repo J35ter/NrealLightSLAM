@@ -15,5 +15,7 @@
 //!   with the textured plane at `z = plane_z > 0` in front of the camera.
 
 pub mod camera;
+pub mod features;
 pub mod frame;
+pub mod klt;
 pub mod synthetic;

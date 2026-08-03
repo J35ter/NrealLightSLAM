@@ -8,13 +8,41 @@ use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use super::camera::StereoRig;
 use super::frame::{DepthMap, StereoFrame};
 
-/// Deterministic, feature-rich grayscale texture on the plane (fine dots +
-/// a coarse checkerboard). Any `(x, y)` plane coordinate → 0..255.
+/// Deterministic aperiodic grayscale texture: smooth value noise (fine +
+/// coarse octaves) PLUS a hard-quantized octave — real scenes have both soft
+/// texture and sharp edges, and FAST needs the latter. Periodic sine textures
+/// would create near-degenerate LK minima. Any `(x, y)` plane coordinate
+/// (meters) → 0..255.
 pub fn texture(x: f64, y: f64) -> u8 {
-    let check = ((x * 1.5).floor() + (y * 1.5).floor()) as i64;
-    let base = if check.rem_euclid(2) == 0 { 60.0 } else { 180.0 };
-    let dots = (x * 40.0).sin() * (y * 37.0).cos() + (x * 23.0 + y * 29.0).sin();
-    (base + dots * 30.0).clamp(0.0, 255.0) as u8
+    let n1 = value_noise(x / 0.03, y / 0.03);
+    let n2 = value_noise(x / 0.12, y / 0.12);
+    // 5-level quantization of a fine octave: hard edges ~6.5 px apart.
+    let hard = (value_noise(x / 0.02, y / 0.02) * 5.0).floor() / 5.0;
+    ((n1 * 0.3 + n2 * 0.2 + hard * 0.5) * 255.0).clamp(0.0, 255.0) as u8
+}
+
+/// Deterministic hash of integer lattice coordinates → [0, 1).
+fn hash2(x: f64, y: f64) -> f64 {
+    let s = (x * 12.9898 + y * 78.233).sin() * 43758.5453;
+    s - s.floor()
+}
+
+/// Smooth interpolated value noise (bilinear + smoothstep), range [0, 1).
+fn value_noise(x: f64, y: f64) -> f64 {
+    let xi = x.floor();
+    let yi = y.floor();
+    let xf = x - xi;
+    let yf = y - yi;
+    let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
+    let u = smooth(xf);
+    let v = smooth(yf);
+    let a = hash2(xi, yi);
+    let b = hash2(xi + 1.0, yi);
+    let c = hash2(xi, yi + 1.0);
+    let d = hash2(xi + 1.0, yi + 1.0);
+    let ab = a + (b - a) * u;
+    let cd = c + (d - c) * u;
+    ab + (cd - ab) * v
 }
 
 /// Render the textured plane at world `z = plane_z` from a camera with pose
