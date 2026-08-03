@@ -1,6 +1,7 @@
 //! Hand-rolled CLI parser (spec §2.6: "may keep hand-rolled parser for zero
 //! deps"). Zero-dependency by design; validation errors exit with code 2.
 
+use crate::log::Level;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -42,6 +43,13 @@ pub struct Config {
     /// Dev/testing aid: read IMU samples from a JSONL file instead of USB
     /// (deviation from the USB-exclusive input path, documented in README).
     pub replay: Option<PathBuf>,
+    /// Log verbosity to stderr. Default [`Level::Error`] — warnings (e.g.
+    /// UDP send failures) are hidden unless the user opts in.
+    pub log_level: Level,
+    /// Startup stationary gyro-bias calibration window in seconds
+    /// (`0` disables). Default 2.0 — removes residual turn-on bias that
+    /// otherwise integrates into linear yaw drift (measured ~15°/60 s).
+    pub gyro_calib: f64,
 }
 
 impl Default for Config {
@@ -64,6 +72,8 @@ impl Default for Config {
             udp_rate: 60.0,
             units: Units::Deg,
             replay: None,
+            log_level: Level::Error,
+            gyro_calib: 2.0,
         }
     }
 }
@@ -232,6 +242,19 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 };
             }
             "--replay" => cfg.replay = Some(PathBuf::from(it.take("--replay")?)),
+            "--log-level" => {
+                let raw = it.take("--log-level")?;
+                cfg.log_level = Level::parse(&raw).ok_or_else(|| {
+                    format!(
+                        "invalid value for --log-level: {:?} (error|warn|info|debug)",
+                        raw
+                    )
+                })?;
+            }
+            "--gyro-calib" => {
+                let raw = it.take("--gyro-calib")?;
+                cfg.gyro_calib = parse_nonneg(&raw, "--gyro-calib")?;
+            }
             other => return Err(format!("unknown option: {other}")),
         }
     }
@@ -264,6 +287,8 @@ pub fn usage() -> &'static str {
         "    --log-imu <PATH>     Append raw IMU samples to file (JSONL)\n",
         "    --log-pose <PATH>    Append filtered pose to file (JSONL)\n",
         "    --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB\n",
+        "    --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)\n",
+        "    --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)\n",
         "    --version            Print version and exit\n",
         "    --help               Print help and exit\n",
     )
@@ -294,6 +319,8 @@ mod tests {
         assert_eq!(c.udp_rate, 60.0);
         assert_eq!(c.units, Units::Deg);
         assert!(c.replay.is_none());
+        assert_eq!(c.log_level, Level::Error);
+        assert_eq!(c.gyro_calib, 2.0);
     }
 
     #[test]
@@ -348,6 +375,25 @@ mod tests {
         assert!(run(&["--host", "--hud"]).is_err());
         assert!(run(&["--port", "--no-udp"]).is_err());
         assert!(run(&["--kp", "--invert-roll"]).is_err());
+    }
+
+    #[test]
+    fn log_level_and_gyro_calib() {
+        let ParseOutcome::Run(c) = run(&["--log-level", "warning", "--gyro-calib", "0"]).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(c.log_level, Level::Warn);
+        assert_eq!(c.gyro_calib, 0.0);
+        for alias in ["warn", "warning", "info", "debug", "error"] {
+            let ParseOutcome::Run(c) = run(&["--log-level", alias]).unwrap() else {
+                panic!()
+            };
+            assert_eq!(c.log_level, Level::parse(alias).unwrap());
+        }
+        assert!(run(&["--log-level", "bogus"]).is_err());
+        assert!(run(&["--gyro-calib", "-1"]).is_err());
+        assert!(run(&["--gyro-calib", "nan"]).is_err());
     }
 
     #[test]

@@ -78,6 +78,8 @@ neuromancer-tracker [OPTIONS]
   --log-imu <PATH>     Append raw IMU samples to file (JSONL)
   --log-pose <PATH>    Append filtered pose to file (JSONL)
   --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB
+  --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)
+  --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)
   --version            Print version and exit
   --help               Print help and exit
 ```
@@ -113,6 +115,31 @@ neuromancer-tracker [OPTIONS]
 
 - First Ctrl-C → flush logs, clean exit 0. Second Ctrl-C → immediate exit 1.
 - Startup prints a confirmation line: `device=... kp=... ki=... out=... protocol=... units=... udp_rate=...Hz hud=...`.
+
+## Log levels (`--log-level`)
+
+Messages go to stderr, gated by verbosity. Default is `error` — the run is
+quiet: only errors print (plus the startup line and HUD on stdout).
+
+- `--log-level warning` — also shows throttled warnings (e.g. "UDP send
+  failed … is Opentrack listening?" at most once per 5 s).
+- `--log-level info` — also shows the gyro-bias calibration result and the
+  measured `imu_rate`.
+- `--log-level debug` — shows every UDP send failure (unthrottled).
+
+## Yaw drift & gyro calibration (`--gyro-calib`)
+
+The Nreal Light has **no magnetometer**, so yaw has no absolute reference and
+any residual gyro bias integrates into linear yaw drift. Measured on real
+glasses (2026-08-04): ~15°/60 s ≈ 0.25°/s constant — classic turn-on bias
+left after the driver's static device calibration.
+
+By default the tracker runs a **2 s stationary gyro-bias calibration at
+startup**: keep the glasses still (table is ideal), it measures the mean gyro
+while still and subtracts it from every sample. Drift after calibration is
+well under the T3 budget. Adjust with `--gyro-calib <SECONDS>` (0 disables).
+Calibration waits for stillness (max 5× the window) and logs a warning if the
+device was moving.
 
 ## Conventions & implementation notes
 

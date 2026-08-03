@@ -10,13 +10,15 @@
 #   PROTOCOL=extended ./start-tracker.sh            # env overrides, defaults below
 #
 # Overridable environment variables:
-#   PROTOCOL  classic|extended   (default classic)   --protocol switch (OQ1)
-#   HOST      Opentrack host     (default 127.0.0.1) --host
-#   PORT      Opentrack UDP port (default 4242)      --port
-#   UDP_RATE  Hz                 (default 60)        --udp-rate
-#   UNITS     deg|rad            (default deg)       --units
-#   BIN       tracker binary     (default target/release/neuromancer-tracker)
-#   BUILD     auto|always        (default auto: build only if binary missing)
+#   PROTOCOL   classic|extended   (default classic)   --protocol switch (OQ1)
+#   HOST       Opentrack host     (default 127.0.0.1) --host
+#   PORT       Opentrack UDP port (default 4242)      --port
+#   UDP_RATE   Hz                 (default 60)        --udp-rate
+#   UNITS      deg|rad            (default deg)       --units
+#   LOG_LEVEL  error|warn|info|debug (default error)  --log-level
+#   GYRO_CALIB seconds            (default 2.0, 0=off) --gyro-calib
+#   BIN        tracker binary     (default target/release/neuromancer-tracker)
+#   BUILD      auto|always        (default auto: build only if binary missing)
 
 set -euo pipefail
 
@@ -29,6 +31,8 @@ PORT="${PORT:-4242}"
 UDP_RATE="${UDP_RATE:-60}"
 UNITS="${UNITS:-deg}"
 PROTOCOL="${PROTOCOL:-classic}"
+LOG_LEVEL="${LOG_LEVEL:-error}"
+GYRO_CALIB="${GYRO_CALIB:-2.0}"
 
 case "$PROTOCOL" in
     classic|extended) ;;
@@ -40,12 +44,17 @@ case "$UNITS" in
     *) echo "error: UNITS must be 'deg' or 'rad' (got '$UNITS')" >&2; exit 2 ;;
 esac
 
+case "$LOG_LEVEL" in
+    error|warn|warning|info|debug) ;;
+    *) echo "error: LOG_LEVEL must be error|warn|info|debug (got '$LOG_LEVEL')" >&2; exit 2 ;;
+esac
+
 if [[ "${BUILD:-auto}" == "always" ]] || [[ ! -x "$BIN" ]]; then
     echo "building release binary..." >&2
     cargo build --release
 fi
 
-echo "tracker: HUD on, UDP -> ${HOST}:${PORT} (protocol=${PROTOCOL}, ${UDP_RATE} Hz, ${UNITS})" >&2
+echo "tracker: HUD on, UDP -> ${HOST}:${PORT} (protocol=${PROTOCOL}, ${UDP_RATE} Hz, ${UNITS}), log=${LOG_LEVEL}, gyro-calib=${GYRO_CALIB}s" >&2
 echo "extra args: $*" >&2
 
 # exec so Ctrl-C / SIGINT reaches the tracker directly (its own signal handling).
@@ -56,4 +65,6 @@ exec "$BIN" \
     --protocol "$PROTOCOL" \
     --udp-rate "$UDP_RATE" \
     --units "$UNITS" \
+    --log-level "$LOG_LEVEL" \
+    --gyro-calib "$GYRO_CALIB" \
     "$@"

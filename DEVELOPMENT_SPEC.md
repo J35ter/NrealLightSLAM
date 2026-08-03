@@ -284,6 +284,9 @@ neuromancer-tracker [OPTIONS]
   --sensitivity <F>    Output sensitivity multiplier (default 1.0)
   --log-imu <PATH>     Append raw IMU samples to file (JSONL)
   --log-pose <PATH>    Append filtered pose to file (JSONL, wire units)
+  --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB
+  --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)
+  --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)
   --version            Print version and exit
   --help               Print help and exit
 ```
@@ -593,6 +596,15 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
   a dedicated discriminating test (`mahony_body_frame_gyro_composes_right`)
   guards the operand order. Math is f64 (spec §2.4 mentioned f32) for
   deterministic long-run drift behavior; the crate stays dependency-free.
+- **Yaw drift — root cause found (2026-08-04, V's hardware).** Glasses steady
+  on a table drifted **+15°/60 s** — a constant ≈ 0.25°/s, the classic
+  signature of residual **gyro turn-on bias** (left after `ar-drivers`' static
+  device calibration). With no magnetometer, yaw has no reference, so any
+  bias integrates linearly. Fix: **startup stationary gyro-bias calibration**
+  (`--gyro-calib`, default 2 s) measures the mean gyro while still and
+  subtracts it. Verified in a reproduction test: same 0.25°/s bias → 15°/60 s
+  uncalibrated, < 2.5° after calibration; live replay shows the calibrator
+  recovering `gy=0.004363 rad/s` exactly.
 
 ### C.2 Deliberate deviations / additions (vs spec text)
 
@@ -605,6 +617,8 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
 | 5 | Pose log = wire units, one line per filter frame | "Matches wire format" per §4.4; full rate for latency analysis |
 | 6 | Rate decimator emits 50 Hz from a 200 Hz stream | Every 4th sample ≥ 16.7 ms interval — "60 Hz max, no minimum" §4.2; `--udp-rate` can raise it |
 | 7 | HUD fixed-width columns (`{:6.1}`) | Stable columns for video capture (spec §4.3 intent) |
+| 8 | `--log-level` (default `error`) — stderr warnings hidden by default | User request: no UDP warning spam unless `--log-level warning` (2026-08-04) |
+| 9 | `--gyro-calib <SEC>` (default 2.0) — startup stationary gyro-bias calibration | Fixes residual-bias yaw drift measured at ~15°/60 s on real glasses (§C.1); 0 disables |
 
 ### C.3 Acceptance-test status (spec §3.7)
 
@@ -615,7 +629,7 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
 | T7 `--log-imu` + replay through filter | **PASSED** | integration test `replay_through_filter_tracks_yaw` |
 | T8 `cargo test` (ahrs crate) | **PASSED** — 14 tests | `cargo test --workspace` (46 total) |
 | T2 headset rotation → HUD sign/magnitude | **TOMORROW (needs glasses)** | hardware on .240 |
-| T3 60 s still → yaw drift < 5° | **TOMORROW (needs glasses)** | hardware on .240 |
+| T3 60 s still → yaw drift < 5° | **RE-TEST tomorrow** — 15°/60 s drift found (2026-08-04); root cause = residual gyro bias, fixed via startup calibration (§C.1) | hardware on .240 |
 | T5 Opentrack receives pose, head-look works | **TOMORROW (needs glasses + Opentrack)** | hardware on .240 |
 | T6 USB unplug mid-run → exit 3 | **TOMORROW (needs glasses)** | hardware on .240 |
 
@@ -633,9 +647,14 @@ target/release/neuromancer-tracker --log-imu /tmp/imu.jsonl --hud
    `--invert-yaw/--invert-pitch/--invert-roll` (or `--sensitivity` to scale).
    Note the convention: +yaw = turn left ("turning left is positive y" per
    ar-drivers). Calibrate with the flags and report the mapping back.
-2. **T3 drift:** place the headset still on a table for 60 s; watch HUD yaw —
-   expect < 5° drift with pitch/roll stable. Run
-   `--log-pose /tmp/pose.jsonl` for a numeric record.
+2. **T3 drift:** place the headset still on a table for 60 s; the tracker now
+   calibrates the gyro bias at startup (default 2 s — keep it still), then
+   watch HUD yaw — expect **well under 5°** now (was ~15° before the fix;
+   the startup line shows `calib=2s`). Run `--log-level info` to see the
+   measured bias (`gy=0.004363 rad/s` ≈ 0.25°/s on the first run), and
+   `--log-pose /tmp/pose.jsonl` for a numeric record. If drift is still
+   large, capture `--log-imu /tmp/imu.jsonl` and report it — that tells us
+   whether the residual is bias, scale, or temperature.
 3. **T5 Opentrack:** start Opentrack, add the "UDP over network" tracker on
    127.0.0.1:4242, start the tracker, check head-look in a game or the
    Opentrack preview. The wire is 6×f64 **degrees**, native endianness.

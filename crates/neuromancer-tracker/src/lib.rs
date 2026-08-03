@@ -3,7 +3,9 @@
 //! output sinks).
 
 pub mod axis;
+pub mod calib;
 pub mod cli;
 pub mod imu;
 pub mod jsonl;
+pub mod log;
 pub mod output;

@@ -7,6 +7,7 @@ use std::time::Duration;
 use neuromancer_ahrs::{quat_to_ypr, Mahony};
 
 use neuromancer_tracker::axis::AxisMap;
+use neuromancer_tracker::calib::GyroCalibrator;
 use neuromancer_tracker::cli::{parse, ParseOutcome, Protocol, Units};
 use neuromancer_tracker::imu::{ImuError, ImuSource, ReplaySource};
 use neuromancer_tracker::jsonl::{write_imu, ImuSample};
@@ -59,6 +60,76 @@ fn run_pipeline(samples: &[ImuSample], map: AxisMap) -> [f64; 3] {
         final_ypr = ypr;
     }
     final_ypr
+}
+
+/// Run a sample stream through the Mahony filter with a gyro bias subtracted,
+/// return the final yaw in degrees.
+fn run_with_bias(samples: &[ImuSample], bias: [f64; 3]) -> f64 {
+    let mut mahony = Mahony::new();
+    let mut prev_t: Option<f64> = None;
+    for s in samples {
+        let dt = match prev_t {
+            Some(pt) => (s.t - pt).clamp(0.0, 0.1),
+            None => 0.0,
+        };
+        prev_t = Some(s.t);
+        mahony.update(
+            [s.ax, s.ay, s.az],
+            [s.gx - bias[0], s.gy - bias[1], s.gz - bias[2]],
+            dt,
+        );
+    }
+    let [yaw, _, _] = quat_to_ypr(mahony.quaternion());
+    yaw.to_degrees()
+}
+
+/// Deterministic pseudo-random noise in ±0.005 rad/s (zero-mean-ish).
+fn noise(i: usize, phase: f64) -> f64 {
+    (i as f64 * 12.9898 + phase * 97.0).sin() * 0.005
+}
+
+/// Reproduces V's field finding (2026-08-04): a residual gyro bias of
+/// ~0.25°/s integrates into ~15° yaw drift over 60 s (no magnetometer yaw
+/// reference). The startup stationary calibration must remove it.
+#[test]
+fn gyro_bias_drift_and_calibration() {
+    let bias = 0.25f64.to_radians();
+    let dt = 0.005;
+    let calib_samples = 2 * 200 + 20; // 2 s @ 200 Hz window + margin (first sample has dt=0)
+    let n_total = calib_samples + 60 * 200; // + 60 s drift test
+    let samples: Vec<ImuSample> = (0..n_total)
+        .map(|i| ImuSample {
+            t: i as f64 * dt,
+            ax: 0.0,
+            ay: G,
+            az: 0.0,
+            gx: noise(i, 1.0),
+            gy: bias + noise(i, 2.0),
+            gz: noise(i, 3.0),
+        })
+        .collect();
+
+    // Without calibration: ~15° after 60 s (the reported symptom).
+    let uncalibrated = run_with_bias(&samples[calib_samples..], [0.0; 3]);
+    assert!(
+        (uncalibrated - 15.0).abs() < 1.5,
+        "uncalibrated drift {uncalibrated}° (expected ≈15°)"
+    );
+
+    // With the startup calibration: bias is recovered from the still window.
+    let mut cal = GyroCalibrator::new(2.0);
+    let mut bias_est = [0.0; 3];
+    for s in samples.iter().take(calib_samples) {
+        if let Some(res) = cal.push(s) {
+            bias_est = res.bias;
+        }
+    }
+    assert!((bias_est[1] - bias).abs() < 0.002, "bias est {bias_est:?}");
+    let calibrated = run_with_bias(&samples[calib_samples..], bias_est);
+    assert!(
+        calibrated.abs() < 2.5,
+        "calibrated drift {calibrated}° (expected ≈0)"
+    );
 }
 
 #[test]

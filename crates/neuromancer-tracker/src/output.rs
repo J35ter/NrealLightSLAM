@@ -142,17 +142,23 @@ impl Sink for UdpSink {
         match self.socket.send(&buf[..len]) {
             Ok(_) => {}
             Err(e) => {
-                let now = Instant::now();
-                let should_warn =
-                    self.last_warn.is_none() || now.duration_since(self.last_warn.unwrap()) >= UDP_WARN_INTERVAL;
-                if should_warn {
-                    self.last_warn = Some(now);
-                    eprintln!(
-                        "warning: UDP send to {} failed: {e} (is Opentrack listening on port {}?) — further warnings throttled to once/{:.0}s",
-                        self.dest,
-                        self.dest.port(),
-                        UDP_WARN_INTERVAL.as_secs_f64()
-                    );
+                if crate::log::enabled(crate::log::Level::Debug) {
+                    // Full verbosity: report every failure.
+                    crate::log_debug!("udp send to {} failed: {e}", self.dest);
+                } else if crate::log::enabled(crate::log::Level::Warn) {
+                    // Throttled: at most one per interval (see struct docs).
+                    let now = Instant::now();
+                    let should_warn = self.last_warn.is_none()
+                        || now.duration_since(self.last_warn.unwrap()) >= UDP_WARN_INTERVAL;
+                    if should_warn {
+                        self.last_warn = Some(now);
+                        crate::log_warn!(
+                            "UDP send to {} failed: {e} (is Opentrack listening on port {}?) — further warnings throttled to once/{:.0}s",
+                            self.dest,
+                            self.dest.port(),
+                            UDP_WARN_INTERVAL.as_secs_f64()
+                        );
+                    }
                 }
             }
         }
@@ -237,7 +243,7 @@ impl Sink for PoseLogSink {
         ];
         if let Err(e) = jsonl::write_pose(&mut self.out, frame.t, ypr) {
             self.failing = true;
-            eprintln!("warning: pose log write failed, disabled: {e}");
+            crate::log_warn!("pose log write failed, disabled: {e}");
         }
     }
 
@@ -275,7 +281,7 @@ impl ImuLogSink {
         }
         if let Err(e) = jsonl::write_imu(&mut self.out, s) {
             self.failing = true;
-            eprintln!("warning: IMU log write failed, disabled: {e}");
+            crate::log_warn!("IMU log write failed, disabled: {e}");
         }
     }
 }
