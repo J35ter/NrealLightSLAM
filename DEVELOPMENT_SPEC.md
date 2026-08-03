@@ -604,7 +604,13 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
   (`--gyro-calib`, default 2 s) measures the mean gyro while still and
   subtracts it. Verified in a reproduction test: same 0.25°/s bias → 15°/60 s
   uncalibrated, < 2.5° after calibration; live replay shows the calibrator
-  recovering `gy=0.004363 rad/s` exactly.
+  recovering `gy=0.004363 rad/s` exactly. The bias also drifts with
+  temperature mid-session, so the tracker **refreshes it in-run**: whenever
+  the glasses rest still for the window, the bias is re-measured and swapped
+  in (verified live: `gy=0.004370 → 0.008724` after an injected 0.25→0.5°/s
+  drift). Persisting calibration across boots is deliberately NOT done —
+  turn-on bias is random per power cycle, so a fresh 2 s measurement beats a
+  saved value.
 
 ### C.2 Deliberate deviations / additions (vs spec text)
 
@@ -618,7 +624,7 @@ clippy clean, `cargo build --release` verified. Commits: `5ae2119`, `0d51687`,
 | 6 | Rate decimator emits 50 Hz from a 200 Hz stream | Every 4th sample ≥ 16.7 ms interval — "60 Hz max, no minimum" §4.2; `--udp-rate` can raise it |
 | 7 | HUD fixed-width columns (`{:6.1}`) | Stable columns for video capture (spec §4.3 intent) |
 | 8 | `--log-level` (default `error`) — stderr warnings hidden by default | User request: no UDP warning spam unless `--log-level warning` (2026-08-04) |
-| 9 | `--gyro-calib <SEC>` (default 2.0) — startup stationary gyro-bias calibration | Fixes residual-bias yaw drift measured at ~15°/60 s on real glasses (§C.1); 0 disables |
+| 9 | `--gyro-calib <SEC>` (default 2.0) — startup stationary gyro-bias calibration **+ in-run refresh on stillness** | Fixes residual-bias yaw drift measured at ~15°/60 s on real glasses (§C.1); 0 disables. In-run refresh tracks thermal bias drift mid-session; no persistence across boots (turn-on bias is random per power cycle) |
 
 ### C.3 Acceptance-test status (spec §3.7)
 
@@ -650,11 +656,14 @@ target/release/neuromancer-tracker --log-imu /tmp/imu.jsonl --hud
 2. **T3 drift:** place the headset still on a table for 60 s; the tracker now
    calibrates the gyro bias at startup (default 2 s — keep it still), then
    watch HUD yaw — expect **well under 5°** now (was ~15° before the fix;
-   the startup line shows `calib=2s`). Run `--log-level info` to see the
-   measured bias (`gy=0.004363 rad/s` ≈ 0.25°/s on the first run), and
-   `--log-pose /tmp/pose.jsonl` for a numeric record. If drift is still
-   large, capture `--log-imu /tmp/imu.jsonl` and report it — that tells us
-   whether the residual is bias, scale, or temperature.
+   the startup line shows `calib=2s`). If you lift the glasses and set them
+   back down mid-run, the bias refreshes again on the next 2 s of stillness
+   ("in-run gyro bias refreshed" at `--log-level info`). Run
+   `--log-level info` to see the measured bias (`gy=0.004363 rad/s` ≈
+   0.25°/s on the first run), and `--log-pose /tmp/pose.jsonl` for a numeric
+   record. If drift is still large, capture `--log-imu /tmp/imu.jsonl` and
+   report it — that tells us whether the residual is bias, scale, or
+   temperature.
 3. **T5 Opentrack:** start Opentrack, add the "UDP over network" tracker on
    127.0.0.1:4242, start the tracker, check head-look in a game or the
    Opentrack preview. The wire is 6×f64 **degrees**, native endianness.

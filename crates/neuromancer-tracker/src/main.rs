@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use neuromancer_ahrs::{quat_to_ypr, Mahony};
 use neuromancer_tracker::axis::AxisMap;
-use neuromancer_tracker::calib::GyroCalibrator;
+use neuromancer_tracker::calib::{BiasRefresher, GyroCalibrator};
 use neuromancer_tracker::cli::{self, Config, ParseOutcome};
 use neuromancer_tracker::imu::{ArDriversSource, ImuError, ImuSource, ReplaySource};
 use neuromancer_tracker::log;
@@ -155,8 +155,10 @@ fn run(cfg: Config) -> ExitCode {
     // A residual turn-on gyro bias integrates into linear yaw drift with no
     // magnetometer reference (measured ~15°/60 s ≈ 0.25°/s on real glasses).
     let mut calib = (cfg.gyro_calib > 0.0).then(|| GyroCalibrator::new(cfg.gyro_calib));
-    let mut gyro_bias: [f64; 3] = [0.0; 3];
     let mut calib_notice = true;
+    // After startup, keep refreshing the bias whenever the device rests still
+    // for a window — tracks in-run thermal drift of the gyro.
+    let mut refresher = BiasRefresher::new(cfg.gyro_calib, [0.0; 3]);
 
     // --- Main loop (spec §3.3) ---------------------------------------------
     let mut prev_t: Option<f64> = None;
@@ -210,7 +212,6 @@ fn run(cfg: Config) -> ExitCode {
             calib_done = c.push(&sample);
         }
         if let Some(res) = calib_done {
-            gyro_bias = res.bias;
             if res.complete {
                 log_info!(
                     "gyro bias calibrated: gx={:.6} gy={:.6} gz={:.6} rad/s ({} still samples, std [{:.4}, {:.4}, {:.4}])",
@@ -229,10 +230,28 @@ fn run(cfg: Config) -> ExitCode {
             n_samples = 0;
             t_first = None;
             rate_reported = false;
+            refresher.set_bias(res.bias);
             calib = None;
         }
         if calib.is_some() {
             continue; // still calibrating: no filter/output yet
+        }
+
+        // --- In-run bias refresh on stillness (tracks thermal drift) -------
+        if let Some(update) = refresher.feed(&sample) {
+            if update.complete {
+                log_info!(
+                    "in-run gyro bias refreshed: gx={:.6} gy={:.6} gz={:.6} rad/s (was [{:.4}, {:.4}, {:.4}], {} still samples)",
+                    update.new[0], update.new[1], update.new[2],
+                    update.old[0], update.old[1], update.old[2],
+                    update.samples
+                );
+            } else {
+                log_warn!(
+                    "in-run gyro calibration incomplete — device moving? keeping bias [{:.4}, {:.4}, {:.4}]",
+                    update.old[0], update.old[1], update.old[2]
+                );
+            }
         }
 
         // dt from sample arrival timestamps (monotonic), clamped (spec §3.3).
@@ -244,9 +263,10 @@ fn run(cfg: Config) -> ExitCode {
 
         // Filter consumes every sample (no input downsampling); the measured
         // gyro bias is subtracted first (calib.rs).
+        let bias = refresher.bias();
         let q = mahony.update(
             [sample.ax, sample.ay, sample.az],
-            [sample.gx - gyro_bias[0], sample.gy - gyro_bias[1], sample.gz - gyro_bias[2]],
+            [sample.gx - bias[0], sample.gy - bias[1], sample.gz - bias[2]],
             dt,
         );
         let mut ypr_deg = quat_to_ypr(q).map(f64::to_degrees);

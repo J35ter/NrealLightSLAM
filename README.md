@@ -141,6 +141,13 @@ well under the T3 budget. Adjust with `--gyro-calib <SECONDS>` (0 disables).
 Calibration waits for stillness (max 5× the window) and logs a warning if the
 device was moving.
 
+Because the bias also drifts with temperature during a session (thermal
+warm-up), the tracker **refreshes it in-run**: whenever the glasses rest still
+for the same window mid-session, the bias is re-measured and swapped in
+silently (visible as "in-run gyro bias refreshed" at `--log-level info`). No
+persistence across boots — the turn-on bias is random per power cycle, so a
+fresh 2 s measurement is always more accurate than a saved value.
+
 ## Conventions & implementation notes
 
 - **Frames:** RUB body frame (+X right, +Y up, +Z back — matches `ar-drivers`

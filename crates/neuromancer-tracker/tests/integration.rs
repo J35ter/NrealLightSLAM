@@ -7,7 +7,7 @@ use std::time::Duration;
 use neuromancer_ahrs::{quat_to_ypr, Mahony};
 
 use neuromancer_tracker::axis::AxisMap;
-use neuromancer_tracker::calib::GyroCalibrator;
+use neuromancer_tracker::calib::{BiasRefresher, GyroCalibrator};
 use neuromancer_tracker::cli::{parse, ParseOutcome, Protocol, Units};
 use neuromancer_tracker::imu::{ImuError, ImuSource, ReplaySource};
 use neuromancer_tracker::jsonl::{write_imu, ImuSample};
@@ -129,6 +129,92 @@ fn gyro_bias_drift_and_calibration() {
     assert!(
         calibrated.abs() < 2.5,
         "calibrated drift {calibrated}° (expected ≈0)"
+    );
+}
+
+/// In-run re-calibration: when the gyro bias drifts mid-session (thermal
+/// warm-up), resting the glasses still for a window re-centers the bias so
+/// yaw stops integrating it. A tracker without the refresh keeps drifting.
+#[test]
+fn in_run_recalibration_stops_drift_after_bias_change() {
+    let b1 = 0.25f64.to_radians(); // turn-on bias at startup
+    let b2 = 0.5f64.to_radians(); // drifted bias (thermal)
+    let dt = 0.005;
+    // Timeline (s): [0..2] still b1 (startup calib) | [2..4] motion 20°/s
+    // | [4..7] still b2 | [7..10] still b2 (drift measured over last 3 s;
+    //   the refresh completes ~2 s into the [4..7] rest).
+    let n = 10 * 200;
+    let motion = 20f64.to_radians();
+    let samples: Vec<ImuSample> = (0..n)
+        .map(|i| {
+            let t = i as f64 * dt;
+            let bias = if t < 4.0 { b1 } else { b2 };
+            let moving = (2.0..4.0).contains(&t);
+            ImuSample {
+                t,
+                ax: 0.0,
+                ay: G,
+                az: 0.0,
+                gx: noise(i, 1.0),
+                gy: bias + if moving { motion } else { 0.0 } + noise(i, 2.0),
+                gz: noise(i, 3.0),
+            }
+        })
+        .collect();
+
+    // Startup calibration over the first still segment.
+    let mut cal = GyroCalibrator::new(2.0);
+    let mut bias_est = [0.0; 3];
+    let mut start_idx = samples.len();
+    for (i, s) in samples.iter().enumerate() {
+        if let Some(res) = cal.push(s) {
+            bias_est = res.bias;
+            start_idx = i + 1;
+            break;
+        }
+    }
+    assert!(start_idx < samples.len(), "startup calibration never finished");
+
+    // Filter + (optional) refresher from the calibration end.
+    let run = |refresh: bool| -> f64 {
+        let mut mahony = Mahony::new();
+        let mut refresher = refresh.then(|| BiasRefresher::new(2.0, bias_est));
+        let mut prev_t: Option<f64> = None;
+        let mut yaw_at_7s: Option<f64> = None;
+        let mut final_yaw = 0.0;
+        for s in &samples[start_idx..] {
+            if let Some(r) = refresher.as_mut() {
+                let _ = r.feed(s);
+            }
+            let bias = refresher.as_ref().map_or(bias_est, |r| r.bias());
+            let dt = match prev_t {
+                Some(pt) => (s.t - pt).clamp(0.0, 0.1),
+                None => 0.0,
+            };
+            prev_t = Some(s.t);
+            mahony.update(
+                [s.ax, s.ay, s.az],
+                [s.gx - bias[0], s.gy - bias[1], s.gz - bias[2]],
+                dt,
+            );
+            let yaw = quat_to_ypr(mahony.quaternion())[0].to_degrees();
+            if s.t >= 7.0 && yaw_at_7s.is_none() {
+                yaw_at_7s = Some(yaw);
+            }
+            final_yaw = yaw;
+        }
+        final_yaw - yaw_at_7s.unwrap_or(0.0)
+    };
+
+    let drift_no_refresh = run(false);
+    let drift_with_refresh = run(true);
+    assert!(
+        drift_no_refresh > 0.4,
+        "without refresh the drifted bias should integrate (got {drift_no_refresh}°)"
+    );
+    assert!(
+        drift_with_refresh.abs() < 0.4,
+        "with refresh the bias is re-centered (got {drift_with_refresh}°)"
     );
 }
 

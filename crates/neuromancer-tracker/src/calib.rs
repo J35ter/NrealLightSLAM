@@ -33,6 +33,75 @@ pub struct CalibResult {
     pub complete: bool,
 }
 
+/// One in-run bias refresh event.
+#[derive(Debug, Clone, Copy)]
+pub struct BiasUpdate {
+    /// The bias that was being subtracted before this refresh.
+    pub old: [f64; 3],
+    /// The freshly measured bias (`== old` when the attempt gave up).
+    pub new: [f64; 3],
+    /// True when a full stillness window was collected; false when the
+    /// attempt gave up (device kept moving) and the bias is unchanged.
+    pub complete: bool,
+    /// Still samples used for the measurement.
+    pub samples: u64,
+    /// Per-axis std of the still samples (rad/s).
+    pub std: [f64; 3],
+}
+
+/// In-run gyro-bias refresher: while the tracker runs, whenever the device
+/// rests still for `window` seconds the bias is re-measured and swapped in —
+/// this tracks in-run thermal drift of the gyro bias (the startup calibration
+/// only covers the moment it ran). Re-arms automatically after each attempt.
+pub struct BiasRefresher {
+    window: f64,
+    calib: Option<GyroCalibrator>,
+    bias: [f64; 3],
+}
+
+impl BiasRefresher {
+    /// `window_seconds` <= 0 disables refreshing (bias stays as given).
+    pub fn new(window_seconds: f64, initial_bias: [f64; 3]) -> Self {
+        BiasRefresher {
+            window: window_seconds,
+            calib: (window_seconds > 0.0).then(|| GyroCalibrator::new(window_seconds)),
+            bias: initial_bias,
+        }
+    }
+
+    /// The bias to subtract from gyro samples right now.
+    pub fn bias(&self) -> [f64; 3] {
+        self.bias
+    }
+
+    /// Replace the bias without triggering a measurement (used to hand over
+    /// the startup-calibration result).
+    pub fn set_bias(&mut self, bias: [f64; 3]) {
+        self.bias = bias;
+    }
+
+    /// Feed one sample. Returns `Some(update)` when a refresh attempt
+    /// finished (full stillness window measured, or gave up because the
+    /// device kept moving); `None` while an attempt is in progress or the
+    /// refresher is disabled.
+    pub fn feed(&mut self, s: &ImuSample) -> Option<BiasUpdate> {
+        let res = self.calib.as_mut()?.push(s)?;
+        let update = BiasUpdate {
+            old: self.bias,
+            new: if res.complete { res.bias } else { self.bias },
+            complete: res.complete,
+            samples: res.samples,
+            std: res.std,
+        };
+        if res.complete {
+            self.bias = res.bias;
+        }
+        // Re-arm for the next rest period.
+        self.calib = Some(GyroCalibrator::new(self.window));
+        Some(update)
+    }
+}
+
 /// Collects gyro samples while the device is stationary and estimates bias.
 ///
 /// All timing is derived from the sample timestamps (`t`, monotonic seconds
@@ -218,5 +287,63 @@ mod tests {
         assert!(!r.complete);
         assert_eq!(r.samples, 0);
         assert_eq!(r.bias, [0.0; 3]);
+    }
+
+    /// The in-run refresher: no refresh during motion, refresh on stillness
+    /// (tracking a bias change), and it re-arms for the next rest period.
+    #[test]
+    fn refresher_tracks_bias_change_and_reatms() {
+        let b1 = 0.00436; // 0.25°/s
+        let b2 = 0.00873; // 0.5°/s — "thermal drift"
+        let mut r = BiasRefresher::new(1.0, [0.0, b1, 0.0]);
+        assert_eq!(r.bias()[1], b1);
+
+        // Motion: no refresh.
+        for i in 0..200 {
+            let s = sample(i as f64 * 0.005, 2.0, 1.0, 0.0, [0.0, G, 0.0]);
+            assert!(r.feed(&s).is_none(), "must not refresh while moving");
+        }
+
+        // Still with the drifted bias b2: refresh fires after ~1 s.
+        let mut refresh = None;
+        for i in 200..460 {
+            let s = sample(i as f64 * 0.005, 0.0, b2, 0.0, [0.0, G, 0.0]);
+            if let Some(u) = r.feed(&s) {
+                refresh = Some(u);
+                break;
+            }
+        }
+        let u = refresh.expect("refresh should fire");
+        assert!(u.complete);
+        assert!((u.old[1] - b1).abs() < 1e-9, "old bias {:?}", u.old);
+        assert!((u.new[1] - b2).abs() < 0.002, "new bias {:?}", u.new);
+        assert!((r.bias()[1] - b2).abs() < 0.002);
+
+        // Re-armed: a short rest must NOT immediately fire again…
+        for i in 460..560 {
+            let s = sample(i as f64 * 0.005, 0.0, b2, 0.0, [0.0, G, 0.0]);
+            assert!(r.feed(&s).is_none(), "must re-arm after refresh");
+        }
+        // …but a full window will.
+        let mut second = None;
+        for i in 560..820 {
+            let s = sample(i as f64 * 0.005, 0.0, b2, 0.0, [0.0, G, 0.0]);
+            if let Some(u) = r.feed(&s) {
+                second = Some(u);
+                break;
+            }
+        }
+        assert!(second.unwrap().complete);
+    }
+
+    /// Disabled refresher (window 0): never fires, bias unchanged.
+    #[test]
+    fn refresher_disabled_when_window_zero() {
+        let mut r = BiasRefresher::new(0.0, [0.0, 0.1, 0.0]);
+        for i in 0..500 {
+            let s = sample(i as f64 * 0.005, 0.0, 0.0, 0.0, [0.0, G, 0.0]);
+            assert!(r.feed(&s).is_none());
+        }
+        assert_eq!(r.bias(), [0.0, 0.1, 0.0]);
     }
 }
