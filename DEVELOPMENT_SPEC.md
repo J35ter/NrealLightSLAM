@@ -797,11 +797,22 @@ things that shape P2a's remaining work:
   `cli_sigint_mid_run_exits_0` (SIGINT to a running process must exit 0);
   `ctrlc` dependency removed.
 
-**M7 action item for M8:** patch or vendor `ar-drivers` `get_frame` to use
-`actual_timeout` in the retry loop and to treat a partial-frame read as
-incomplete data rather than restarting the frame window — that removes the
-~13 fps alignment state entirely. The VO ~26 ms pose cost is secondary
-(headroom to M8 tuning).
+**M7 action item for M8 — DONE 2026-08-04:** `ar-drivers` 0.4.3 is now
+vendored (`vendor/ar-drivers`) with `get_frame` fixed: reads accumulate
+into a persistent buffer and exactly one 615908-byte frame is extracted,
+with the over-read tail (start of the next frame) carried over instead of
+discarded, and retries using `actual_timeout`. The old code discarded any
+read that was not exactly one frame, which — because a single `read_bulk`
+often returns a frame *plus* the start of the next (both ending on short
+packets) — forced a second blocking read (~74 ms/frame) permanently:
+the ~13 fps alignment state. Probe-verified: 10/10 runs at 29.8 fps, no
+13 fps state; record→replay round-trip intact. The VO pose cost (~26 ms
+on the spike scene, up to ~108 ms on high-texture scenes) is now the
+binding constraint in pose-heavy conditions (~6–10 fps end-to-end) and
+is an M9 tuning item (RANSAC budget, keyframe thinning). Note: the
+vendored crate's upstream `examples/` and dev-deps (clap, opencv — whose
+build script fails on this toolchain) were removed; clippy is silenced
+at the crate root as third-party code.
 
 ### D.6 Remaining P2a milestones
 

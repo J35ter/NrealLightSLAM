@@ -63,6 +63,15 @@ All notable changes per release. Semver per spec §5.6
 - Intrinsics still not wired (known): km-scale pose garbage on real
   scenes — M8 (CameraDescriptor + fisheye rectification + `imu_to_camera`)
   next.
+- **`ar-drivers` vendored + `get_frame` read fix (M8 action item):**
+  `vendor/ar-drivers` replaces the crates.io dep. `get_frame` now
+  accumulates reads into a persistent buffer and extracts exactly one
+  615908-byte frame, carrying the over-read tail (start of the next frame)
+  instead of discarding it and re-reading. The old discard-and-retry made
+  reads that landed mid-frame cost ~74 ms (a persistent ~13 fps state);
+  probe-verified 10/10 runs now at 29.8 fps with no 13 fps state. Upstream
+  `examples/` + dev-deps (clap, opencv) removed; clippy silenced at the
+  crate root (third-party).
 
 ### Pending
 
