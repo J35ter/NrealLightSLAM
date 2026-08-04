@@ -819,7 +819,7 @@ at the crate root as third-party code.
 | M | Deliverable | Verification | Status |
 |---|-------------|--------------|--------|
 | M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **DONE 2026-08-04 — see D.7; real-scene pose stability is M9** |
-| M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **IN PROGRESS — see D.8: max-depth rejection + RANSAC gate + keyframe advance landed; residual drift tuning open** |
+| M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **IN PROGRESS — see D.8/D.9: max-depth rejection + RANSAC gate + keyframe advance + RANSAC budget tuning landed; residual jitter tuning open** |
 
 ### D.7 M8 calibration wiring (2026-08-04)
 
@@ -905,9 +905,36 @@ live hardware (glasses, j35ter-A5):
 **Measured live (before → after):** poses sane (< 10 m) **9% → 100%**
 (two 10–12 s runs: 20/20 and 23/23 sane); |pos| median 4.1e14 m → ~0.24 m;
 inter-pose delta median 0.04–0.08 m, max 0.2–0.5 m (bounded, no
-explosions). The residual per-frame delta on a still headset is VO jitter
-— drift tuning (RANSAC budget, feature quality, keyframe thinning, and
-eventually IMU fusion in P2b) remains the open part of M9.
+explosions).
+
+### D.9 M9 drift tuning (2026-08-04, second tranche)
+
+The first tranche bounded pose explosions but left drift: on a *still*
+headset the accumulated path was 4.8–4.9 m over 20 s with endpoint drift
+1.26–1.39 m, a systematic +z bias (mean +0.027 m/step, t = 2.0) and ~15°
+systematic yaw drift. Cause: the loose RANSAC budget (300 iterations,
+3.0 px reprojection threshold) admitted near-degenerate solutions that
+GN refinement then polished. Tuning verified on the same live still
+headset (j35ter-A5):
+
+- **RANSAC budget 300 → 2000 iterations, reprojection threshold
+  3.0 → 1.5 px** (both `estimate_motion` in `motion.rs` and
+  `cam_probe --stats`). After: **path 1.46 m (−70%)**, **endpoint drift
+  0.21 m (−83%)**, **+z bias gone** (mean −0.0012 m/step, t = −0.2),
+  per-step median 0.042 m, max 0.17 m; yaw now only wanders (±12.4°)
+  instead of drifting systematically.
+- **Trade-off: fewer posed frames** (26 vs 45 per 20 s) — the tighter
+  threshold rejects more frames. This is safe by design: rejected frames
+  hit the D.8 min-inlier gate, return `None`, and the pipeline keeps the
+  prior keyframe pose. Starvation is safe; looseness is not.
+- Motion tests still pass (3, ~163 s — the iteration budget dominates
+  runtime; a probabilistic early-exit remains a future lever).
+
+**Remaining (M9):** residual per-frame jitter on a still headset, and
+motion-heavy use of the 1.5 px threshold is untested (measured on a
+still headset). Further levers: feature quality filters (FAST score),
+keyframe thinning, tighter min-inlier gate. The real cure for residual
+drift is IMU fusion (P2b, ESKF as originally planned).
 
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's

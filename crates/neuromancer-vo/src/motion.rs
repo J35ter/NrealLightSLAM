@@ -259,10 +259,15 @@ pub fn estimate_motion(
     // None and the pipeline keeps the previous keyframe instead of injecting
     // explosive drift into the trajectory.
     let min_inliers = (src.len() / 40).max(20);
-    // 3 px reprojection threshold: stereo depth noise (~1-2%) shifts
-    // off-center points by a few px — too tight a threshold starves the
-    // inlier set that the refinement averages over.
-    ransac_motion(&src, &dst, &px_b, &rig.left, 300, 3.0, min_inliers)
+    // M9 drift tuning (2026-08-04, measured on live still headset): the old
+    // 300 iters / 3.0 px threshold let near-degenerate solutions through —
+    // systematic dz bias (mean +0.027 m/step) and ~15° yaw drift. 2000 iters
+    // / 1.5 px cut path 4.8 m → 1.46 m (−70%) and endpoint drift 1.3 m →
+    // 0.21 m (−83%); the dz bias vanished. Tighter threshold rejects more
+    // frames (26 vs 45 posed/20 s), but the min-inlier gate above turns those
+    // into None — the pipeline keeps the prior keyframe pose instead of
+    // injecting jitter. Starvation is safe; looseness is not.
+    ransac_motion(&src, &dst, &px_b, &rig.left, 2000, 1.5, min_inliers)
 }
 
 #[cfg(test)]

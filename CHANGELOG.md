@@ -84,6 +84,14 @@ All notable changes per release. Semver per spec §5.6
   dark auto-exposure first frame and the tracker never recovered. Live
   result: poses sane (< 10 m) 9% → 100% (20/20, 23/23 in two runs),
   |pos| median 4.1e14 → ~0.24 m, inter-pose delta bounded (max 0.2–0.5 m).
+- **M9 second tranche: RANSAC drift tuning.** RANSAC budget 300 iters /
+  3.0 px threshold → **2000 iters / 1.5 px** (motion.rs `estimate_motion`
+  + `cam_probe --stats`). On a live still headset (20 s): path 4.8 m →
+  1.46 m (−70%), endpoint drift 1.3 m → 0.21 m (−83%), systematic +z bias
+  gone (mean −0.0012 m/step, t = −0.2 vs +0.027, t = 2.0), yaw no longer
+  drifts (~15° systematic → ±12.4° wander). Trade-off: fewer posed frames
+  (26 vs 45 per 20 s) — safe because rejected frames hit the D.8
+  min-inlier gate and the pipeline keeps the prior keyframe pose.
 - **`ar-drivers` vendored + `get_frame` read fix (M8 action item):**
   `vendor/ar-drivers` replaces the crates.io dep. `get_frame` now
   accumulates reads into a persistent buffer and extracts exactly one
@@ -96,8 +104,9 @@ All notable changes per release. Semver per spec §5.6
 
 ### Pending
 
-- M9 (rest): drift tuning — RANSAC budget, feature quality filters,
-  keyframe thinning; IMU fusion in P2b.
+- M9 (rest): residual still-headset jitter + motion-heavy validation of
+  the 1.5 px threshold — feature quality filters, keyframe thinning,
+  tighter min-inlier gate; IMU fusion in P2b.
 
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 
