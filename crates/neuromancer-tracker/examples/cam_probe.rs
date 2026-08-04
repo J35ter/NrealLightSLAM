@@ -19,6 +19,10 @@
 //!       exactly: FAST corners → KLT tracked → stereo-matched in keyframe A →
 //!       triangulated in A → stereo-matched in current frame B → triangulated
 //!       in B → 3D-3D pairs into RANSAC → inliers. Plus pose deltas.
+//!   cargo run --release -p neuromancer-tracker --example cam_probe --calib
+//!     — dump the factory calibration the glasses store on-device
+//!       (`CameraDescriptor` per camera: intrinsics, distortion kc,
+//!       leftcam_q_rightcam, imu_to_camera) — the M8 calibration source.
 //! Not part of the shipped tracker binary.
 
 use std::time::{Duration, Instant};
@@ -36,6 +40,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let vo_mode = args.iter().any(|a| a == "--vo");
     let stats_mode = args.iter().any(|a| a == "--stats");
+    let calib_mode = args.iter().any(|a| a == "--calib");
+    if calib_mode {
+        dump_calibration();
+        return;
+    }
     let seconds: f64 = args
         .iter()
         .skip(1)
@@ -304,5 +313,59 @@ fn run_stats(seconds: f64) {
     if !trans_mags.is_empty() {
         print_stats("pose |t| (m)", &trans_mags, |x| x);
         print_stats("pose rot (rad)", &rot_angles, |x| x);
+    }
+}
+
+/// Dump the factory calibration stored on the glasses (M8 calibration
+/// source). `NrealLight::cameras()` reads the on-device `SLAM_camera` config
+/// JSON: focal length (fc), principal point (cc), distortion (kc, 5
+/// coefficients), leftcam_q_rightcam stereo rotation, and imu_to_camera.
+/// Note ar-drivers 0.4.3 only surfaces `kc[0]` into the descriptor and sets
+/// `stereo_rotation` only on the right camera — the raw JSON is richer, so
+/// verify against `get_config_float_array` paths if values look off.
+fn dump_calibration() {
+    use ar_drivers::ARGlasses;
+
+    let mut glasses = match ar_drivers::nreal_light::NrealLight::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("cannot open Nreal Light: {e}");
+            std::process::exit(1);
+        }
+    };
+    let cams = match glasses.cameras() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("cannot read camera descriptors: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!("=== on-device factory calibration (CameraDescriptor) ===");
+    for (i, c) in cams.iter().enumerate() {
+        println!("--- camera {i}: {} ---", c.name);
+        println!("  resolution: {}x{}", c.resolution.x, c.resolution.y);
+        println!("  intrinsic_matrix (fx 0 cx; 0 fy cy; 0 0 1):");
+        println!("    [{:.4}, 0, {:.4}]", c.intrinsic_matrix[(0, 0)], c.intrinsic_matrix[(0, 2)]);
+        println!("    [0, {:.4}, {:.4}]", c.intrinsic_matrix[(1, 1)], c.intrinsic_matrix[(1, 2)]);
+        println!("    [0, 0, 1]");
+        println!(
+            "  distortion kc: [{:.6}, {:.6}, {:.6}, {:.6}, {:.6}]",
+            c.distortion[0], c.distortion[1], c.distortion[2], c.distortion[3], c.distortion[4]
+        );
+        let q = c.stereo_rotation;
+        println!(
+            "  stereo_rotation quat (w,i,j,k): [{:.6}, {:.6}, {:.6}, {:.6}]",
+            q.w, q.i, q.j, q.k
+        );
+        let t = c.imu_to_camera.translation.vector;
+        let qi = c.imu_to_camera.rotation;
+        println!(
+            "  imu_to_camera t: [{:.6}, {:.6}, {:.6}] m",
+            t.x, t.y, t.z
+        );
+        println!(
+            "  imu_to_camera q: [{:.6}, {:.6}, {:.6}, {:.6}]",
+            qi.w, qi.i, qi.j, qi.k
+        );
     }
 }
