@@ -199,6 +199,7 @@ version = "0.1.0"
 dependencies = [
  "ar-drivers",
  "libc",
+ "nalgebra",
  "neuromancer-ahrs",
  "neuromancer-vo",
 ]

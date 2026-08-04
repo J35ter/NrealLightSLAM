@@ -14,23 +14,38 @@
 //!   cargo run --release -p neuromancer-tracker --example cam_probe --vo [seconds]
 //!     — camera read + full tracker VO pipeline (what the binary actually runs),
 //!       reporting read time, vo.process time and pose yield separately.
+//!   cargo run --release -p neuromancer-tracker --example cam_probe --stats [seconds]
+//!     — pipeline funnel counters per frame, replicating `estimate_motion`
+//!       exactly: FAST corners → KLT tracked → stereo-matched in keyframe A →
+//!       triangulated in A → stereo-matched in current frame B → triangulated
+//!       in B → 3D-3D pairs into RANSAC → inliers. Plus pose deltas.
 //! Not part of the shipped tracker binary.
 
 use std::time::{Duration, Instant};
 
-use neuromancer_vo::camera::StereoRig;
+use nalgebra::{Isometry3, Point2};
+
+use neuromancer_vo::camera::{CameraModel, StereoRig};
+use neuromancer_vo::features::detect_corners_fast;
+use neuromancer_vo::klt::klt_track;
+use neuromancer_vo::motion::ransac_motion;
 use neuromancer_vo::pipeline::VoPipeline;
 use neuromancer_vo::stereo::StereoMatcher;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let vo_mode = args.iter().any(|a| a == "--vo");
+    let stats_mode = args.iter().any(|a| a == "--stats");
     let seconds: f64 = args
         .iter()
         .skip(1)
         .find(|a| a.parse::<f64>().is_ok())
         .and_then(|a| a.parse().ok())
         .unwrap_or(15.0);
+    if stats_mode {
+        run_stats(seconds);
+        return;
+    }
     let deadline = Instant::now() + Duration::from_secs_f64(seconds);
 
     let mut cam = ar_drivers::nreal_light::NrealLightSlamCamera::new()
@@ -147,5 +162,147 @@ fn print_hist(label: &str, data: &[f64], lo: f64, hi: f64) {
             (lo + (i as f64 + 0.5) * (hi - lo) / BINS as f64) * 1000.0,
             c
         );
+    }
+}
+
+/// Per-frame pipeline funnel, replicating `motion::estimate_motion` exactly
+/// (M4/M5): FAST corners → KLT track → stereo-match + triangulate in both
+/// frames → 3D-3D pairs → RANSAC inliers. Reports per-frame counts and the
+/// pose delta (translation magnitude + rotation angle) so the tracking-point
+/// variance in a real scene is visible.
+fn run_stats(seconds: f64) {
+    let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
+    let matcher = StereoMatcher::new(5, 0.5, 10.0);
+    let cam: &CameraModel = &rig.left;
+
+    let mut camera = ar_drivers::nreal_light::NrealLightSlamCamera::new()
+        .expect("cannot open Nreal Light SLAM camera");
+    eprintln!("camera opened — pipeline stats for {seconds:.1} s ...");
+
+    let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+    let start = Instant::now();
+
+    // The keyframe (frame A): features detected once, tracked into each new
+    // frame B (matches VoPipeline: every frame is a keyframe, motion is
+    // frame-to-frame A→B).
+    type Keyframe = (Vec<u8>, Vec<u8>, Vec<Point2<f64>>);
+    let mut prev: Option<Keyframe> = None;
+
+    let mut frames = 0usize;
+    let mut posed_frames = 0usize;
+    let mut trans_mags: Vec<f64> = Vec::new();
+    let mut rot_angles: Vec<f64> = Vec::new();
+
+    while Instant::now() < deadline {
+        let f = match camera.get_frame(Duration::from_secs(2)) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("get_frame error: {e}");
+                continue;
+            }
+        };
+        frames += 1;
+
+        match &prev {
+            None => {
+                // First frame: keyframe only.
+                let feats: Vec<Point2<f64>> = detect_corners_fast(
+                    &f.left, 640, 480, 20,
+                )
+                .into_iter()
+                .take(1500)
+                .collect();
+                println!(
+                    "frame {frames:4}  keyframe: {} corners",
+                    feats.len()
+                );
+                prev = Some((f.left, f.right, feats));
+            }
+            Some((left_a, right_a, feats_a)) => {
+                // KLT A→B.
+                let tracked = klt_track(left_a, &f.left, 640, 480, feats_a, 5, 12);
+                let n_tracked = tracked.iter().filter(|t| t.ok).count();
+
+                // Stereo-match + triangulate in A and B, exactly like
+                // estimate_motion's loop.
+                let mut src = Vec::new();
+                let mut dst = Vec::new();
+                let mut px_b = Vec::new();
+                let mut n_matched_a = 0usize;
+                let mut n_matched_b = 0usize;
+                let mut n_tri_a = 0usize;
+                let mut n_tri_b = 0usize;
+                for (feat, t) in feats_a.iter().zip(tracked.iter()) {
+                    if !t.ok {
+                        continue;
+                    }
+                    let Some((da, _)) = matcher.match_feature(&rig, left_a, right_a, feat) else {
+                        continue;
+                    };
+                    n_matched_a += 1;
+                    let Some(pa) = matcher.triangulate(&rig, feat, da) else {
+                        continue;
+                    };
+                    n_tri_a += 1;
+                    let Some((db, _)) = matcher.match_feature(&rig, &f.left, &f.right, &t.point)
+                    else {
+                        continue;
+                    };
+                    n_matched_b += 1;
+                    let Some(pb) = matcher.triangulate(&rig, &t.point, db) else {
+                        continue;
+                    };
+                    n_tri_b += 1;
+                    src.push(pa);
+                    dst.push(pb);
+                    px_b.push(t.point);
+                }
+
+                // RANSAC + GN refinement (same params as estimate_motion).
+                let est = ransac_motion(&src, &dst, &px_b, cam, 300, 3.0);
+                let (inliers, pose) = match &est {
+                    Some(e) => (Some(e.inliers), e.pose),
+                    None => (None, Isometry3::identity()),
+                };
+                let trans_mag = pose.translation.vector.norm();
+                let rot_angle = pose.rotation.angle();
+                if est.is_some() {
+                    posed_frames += 1;
+                    trans_mags.push(trans_mag);
+                    rot_angles.push(rot_angle);
+                }
+                println!(
+                    "frame {frames:4}  corners={:<4} tracked={:<4} matchA={:<4} triA={:<4} matchB={:<4} triB={:<4} pairs={:<4} ransac={}{}  t={:.4} m  r={:.3} rad",
+                    feats_a.len(),
+                    n_tracked,
+                    n_matched_a,
+                    n_tri_a,
+                    n_matched_b,
+                    n_tri_b,
+                    src.len(),
+                    inliers.map(|i| format!("{i}/")).unwrap_or_else(|| "none/".to_string()),
+                    src.len(),
+                    trans_mag,
+                    rot_angle,
+                );
+
+                // New keyframe (frame-to-frame).
+                let feats_b: Vec<Point2<f64>> = detect_corners_fast(
+                    &f.left, 640, 480, 20,
+                )
+                .into_iter()
+                .take(1500)
+                .collect();
+                prev = Some((f.left, f.right, feats_b));
+            }
+        }
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+
+    println!("\n=== pipeline stats ({} s) ===", seconds);
+    println!("frames: {frames} ({:.1} fps), pose frames: {posed_frames}", frames as f64 / elapsed.max(1e-9));
+    if !trans_mags.is_empty() {
+        print_stats("pose |t| (m)", &trans_mags, |x| x);
+        print_stats("pose rot (rad)", &rot_angles, |x| x);
     }
 }

@@ -19,3 +19,8 @@ ar-drivers = { path = "../../vendor/ar-drivers", default-features = false, featu
 # cross-thread scheduling race — see main.rs install_signal_handler).
 # Linux-only for now; P4 (Windows) will revisit signal handling.
 libc = "0.2"
+
+[dev-dependencies]
+# Only the cam_probe example needs nalgebra types directly (replicating the
+# VO pipeline funnel); the library depends on it transitively via neuromancer-vo.
+nalgebra = "0.32"
