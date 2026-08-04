@@ -20,5 +20,11 @@ pub mod frame;
 pub mod klt;
 pub mod motion;
 pub mod pipeline;
+pub mod rectify;
 pub mod stereo;
 pub mod synthetic;
+
+// Re-export the nalgebra types that appear in this crate's public API
+// (StereoRig::left_t_right, project/unproject, etc.) so downstream crates
+// don't need to match nalgebra versions directly.
+pub use nalgebra::{Isometry3, Matrix3, Point2, Point3, Quaternion, Translation3, UnitQuaternion, Vector3};

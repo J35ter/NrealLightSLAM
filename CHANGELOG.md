@@ -63,6 +63,18 @@ All notable changes per release. Semver per spec §5.6
 - Intrinsics still not wired (known): km-scale pose garbage on real
   scenes — M8 (CameraDescriptor + fisheye rectification + `imu_to_camera`)
   next.
+- **M8: real camera calibration wired.** The tracker now builds the
+  rectified rig from the glasses' on-device `CameraDescriptor` (intrinsics
+  fx≈234, cx≈322/319, cy≈246/214; distortion kc; `imu_to_camera`), with
+  per-frame undistort+rectify remaps (`neuromancer-vo::rectify`, Bouguet
+  rotations + bilinear sampling) and head-frame pose alignment
+  (`world_T_head = world_T_cam · imu_to_camera_left`). Stereo baseline
+  0.103 m (from `imu_to_camera`, matches `leftcam_q_rightcam`).
+  Replay uses this unit's captured constants. Verified: epipolar rows
+  aligned (stereo-match vertical offset median 0.00 px), metric depth
+  sanity 100% within [0.3, 20] m on recorded frames, 85 tests green,
+  clippy clean. Remaining km-scale pose on some real frames is M9
+  (RANSAC minimum-inlier gate, feature/keyframe management).
 - **`ar-drivers` vendored + `get_frame` read fix (M8 action item):**
   `vendor/ar-drivers` replaces the crates.io dep. `get_frame` now
   accumulates reads into a persistent buffer and extracts exactly one

@@ -426,7 +426,7 @@ impl Ov580 {
             }
             config.extend_from_slice(&config_part[3..(3 + config_part[2] as usize)]);
         }
-        for i in 0x28..config.len() - 4 {
+        for i in 0x28..config.len().saturating_sub(4) {
             if config[i..i + 3] == [b'\n', b'\n', b'{'] {
                 let config_as_str = String::from_utf8(config[i + 2..].into())
                     .map_err(|_| Error::Other("Invalid glasses config format (no start token)"))?;

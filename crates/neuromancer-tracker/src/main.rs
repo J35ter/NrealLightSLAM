@@ -17,7 +17,6 @@ use neuromancer_tracker::log;
 use neuromancer_tracker::output::{Frame, HudSink, ImuLogSink, PoseLogSink, Sink, UdpSink};
 use neuromancer_tracker::visual::{ReplayVisualSource, SlamCameraSource, VisualRecorder, VisualSource};
 use neuromancer_tracker::{log_error, log_info, log_warn};
-use neuromancer_vo::camera::StereoRig;
 use neuromancer_vo::pipeline::VoPipeline;
 use neuromancer_vo::stereo::StereoMatcher;
 
@@ -386,9 +385,14 @@ fn run_visual(cfg: Config) -> ExitCode {
     let mut recorded = 0usize;
     let mut record_notice = true;
 
-    // M5: canonical rectified rig; hardware intrinsics (ar-drivers
-    // CameraDescriptor) + fisheye rectification land in M7.
-    let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
+    // M8: build the rectified rig from the real camera calibration — the
+    // on-device CameraDescriptor when the glasses are present, otherwise
+    // this unit's captured constants (replay). The rectifier remaps each raw
+    // (distorted, un-rectified) frame into the canonical rectified pair the
+    // VO pipeline expects (same intrinsics, X-only baseline, aligned rows).
+    let (rectifier, imu_to_cam_left) =
+        neuromancer_tracker::cam_calib::build_rectifier(cfg.replay_visual.is_none());
+    let rig = rectifier.rig.clone();
     let mut vo = VoPipeline::new(rig, StereoMatcher::new(5, 0.5, 10.0));
 
     let udp_out = if cfg.no_udp {
@@ -441,16 +445,27 @@ fn run_visual(cfg: Config) -> ExitCode {
             }
             recorded = r.frames();
         }
-        if let Some(pose) = vo.process(&frame.left, &frame.right) {
-            let q = pose.rotation.quaternion();
-            // M5 note: camera-frame YPR; head-frame alignment (imu_to_camera)
-            // is an M7 item.
+        // M8: rectify the raw (distorted, un-rectified) pair into the
+        // canonical rectified rig the VO pipeline expects.
+        let (left_r, right_r) = rectifier.apply(&frame.left, &frame.right);
+        if let Some(pose) = vo.process(&left_r, &right_r) {
+            // M8: express the visual pose in the head/IMU frame.
+            // `imu_to_cam_left` maps IMU-frame points into the left camera
+            // frame (`p_cam = imu_to_cam_left * p_imu`), so the camera pose
+            // becomes a head pose via `world_T_head = world_T_cam * cam_T_imu`
+            // with `cam_T_imu = imu_to_cam_left`. (Cross-checked against the
+            // IMU YPR in M9.)
+            let pose_head = match &imu_to_cam_left {
+                Some(cam_t_imu) => pose * cam_t_imu,
+                None => pose,
+            };
+            let q = pose_head.rotation.quaternion();
             let ypr_deg = neuromancer_ahrs::quat_to_ypr(neuromancer_ahrs::Quat::new(q.w, q.i, q.j, q.k))
                 .map(f64::to_degrees);
             let out = Frame {
                 t: frame.t,
                 ypr_deg,
-                position: [pose.translation.x, pose.translation.y, pose.translation.z],
+                position: [pose_head.translation.x, pose_head.translation.y, pose_head.translation.z],
             };
             for sink in sinks.iter_mut() {
                 sink.write(&out);

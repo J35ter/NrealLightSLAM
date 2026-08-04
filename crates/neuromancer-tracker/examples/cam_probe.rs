@@ -34,6 +34,7 @@ use neuromancer_vo::features::detect_corners_fast;
 use neuromancer_vo::klt::klt_track;
 use neuromancer_vo::motion::ransac_motion;
 use neuromancer_vo::pipeline::VoPipeline;
+use neuromancer_vo::rectify::Rectifier;
 use neuromancer_vo::stereo::StereoMatcher;
 
 fn main() {
@@ -41,6 +42,22 @@ fn main() {
     let vo_mode = args.iter().any(|a| a == "--vo");
     let stats_mode = args.iter().any(|a| a == "--stats");
     let calib_mode = args.iter().any(|a| a == "--calib");
+    let rect_check: Option<String> = args
+        .iter()
+        .position(|a| a == "--rect-check")
+        .and_then(|i| args.get(i + 1).cloned());
+    let depth_check: Option<String> = args
+        .iter()
+        .position(|a| a == "--depth-check")
+        .and_then(|i| args.get(i + 1).cloned());
+    if let Some(dir) = rect_check {
+        run_rect_check(&dir);
+        return;
+    }
+    if let Some(dir) = depth_check {
+        run_depth_check(&dir);
+        return;
+    }
     if calib_mode {
         dump_calibration();
         return;
@@ -180,13 +197,17 @@ fn print_hist(label: &str, data: &[f64], lo: f64, hi: f64) {
 /// pose delta (translation magnitude + rotation angle) so the tracking-point
 /// variance in a real scene is visible.
 fn run_stats(seconds: f64) {
-    let rig = StereoRig::rectified(500.0, 500.0, 320.0, 240.0, 0.12, 640, 480);
+    // M8: use the real calibration (live device descriptors) and rectify
+    // each frame, matching what the tracker binary does.
+    let (rectifier, _) = neuromancer_tracker::cam_calib::build_rectifier(true);
+    let rig = rectifier.rig.clone();
     let matcher = StereoMatcher::new(5, 0.5, 10.0);
     let cam: &CameraModel = &rig.left;
 
     let mut camera = ar_drivers::nreal_light::NrealLightSlamCamera::new()
         .expect("cannot open Nreal Light SLAM camera");
-    eprintln!("camera opened — pipeline stats for {seconds:.1} s ...");
+    eprintln!("camera opened — pipeline stats for {seconds:.1} s (rectified, baseline {:.3} m) ...",
+        rig.left_t_right.translation.vector.x);
 
     let deadline = Instant::now() + Duration::from_secs_f64(seconds);
     let start = Instant::now();
@@ -211,12 +232,14 @@ fn run_stats(seconds: f64) {
             }
         };
         frames += 1;
+        // M8: rectify the raw pair before feature detection / matching.
+        let (r_left, r_right) = rectifier.apply(&f.left, &f.right);
 
         match &prev {
             None => {
                 // First frame: keyframe only.
                 let feats: Vec<Point2<f64>> = detect_corners_fast(
-                    &f.left, 640, 480, 20,
+                    &r_left, 640, 480, 20,
                 )
                 .into_iter()
                 .take(1500)
@@ -225,11 +248,11 @@ fn run_stats(seconds: f64) {
                     "frame {frames:4}  keyframe: {} corners",
                     feats.len()
                 );
-                prev = Some((f.left, f.right, feats));
+                prev = Some((r_left, r_right, feats));
             }
             Some((left_a, right_a, feats_a)) => {
-                // KLT A→B.
-                let tracked = klt_track(left_a, &f.left, 640, 480, feats_a, 5, 12);
+                // KLT A→B (rectified images).
+                let tracked = klt_track(left_a, &r_left, 640, 480, feats_a, 5, 12);
                 let n_tracked = tracked.iter().filter(|t| t.ok).count();
 
                 // Stereo-match + triangulate in A and B, exactly like
@@ -253,7 +276,7 @@ fn run_stats(seconds: f64) {
                         continue;
                     };
                     n_tri_a += 1;
-                    let Some((db, _)) = matcher.match_feature(&rig, &f.left, &f.right, &t.point)
+                    let Some((db, _)) = matcher.match_feature(&rig, &r_left, &r_right, &t.point)
                     else {
                         continue;
                     };
@@ -297,12 +320,12 @@ fn run_stats(seconds: f64) {
 
                 // New keyframe (frame-to-frame).
                 let feats_b: Vec<Point2<f64>> = detect_corners_fast(
-                    &f.left, 640, 480, 20,
+                    &r_left, 640, 480, 20,
                 )
                 .into_iter()
                 .take(1500)
                 .collect();
-                prev = Some((f.left, f.right, feats_b));
+                prev = Some((r_left, r_right, feats_b));
             }
         }
     }
@@ -368,4 +391,135 @@ fn dump_calibration() {
             qi.w, qi.i, qi.j, qi.k
         );
     }
+}
+
+/// Rectification sanity check: load one raw recorded frame pair, rectify it
+/// with the unit's calibration, detect corners in the rectified left image,
+/// and measure the vertical offset of their best same-row stereo matches in
+/// the rectified right image. After correct rectification the residual
+/// vertical offset should be ~0 px (epipolar lines horizontal); the raw
+/// (unrectified) pair shows the camera's vertical misalignment (~30 px).
+fn run_rect_check(dir: &str) {
+    let (left_c, right_c, left_t_right) = neuromancer_tracker::cam_calib::fallback_calib_for_probe();
+    let rect = Rectifier::new(&left_c, &right_c, left_t_right);
+    eprintln!("rectifier built: baseline {:.3} m, coverage {:.1}%", rect.rig.left_t_right.translation.vector.x, rect.coverage() * 100.0);
+
+    let read = |side: &str| -> Vec<u8> {
+        let p = format!("{dir}/{side}_0000.raw");
+        std::fs::read(&p).unwrap_or_else(|e| panic!("cannot read {p}: {e}"))
+    };
+    let (raw_l, raw_r) = (read("left"), read("right"));
+    let (rl, rr) = rect.apply(&raw_l, &raw_r);
+
+    let matcher = StereoMatcher::new(5, 0.5, 10.0);
+    let feats: Vec<Point2<f64>> = detect_corners_fast(&rl, 640, 480, 20)
+        .into_iter()
+        .filter(|c| c.x > 60.0 && c.x < 580.0 && c.y > 60.0 && c.y < 420.0)
+        .collect();
+    eprintln!("detected {} corners in rectified left", feats.len());
+
+    // For each corner, find the best stereo match; the winning disparity's
+    // row in the right image should equal the left row (epipolar alignment).
+    let mut v_offsets: Vec<f64> = Vec::new();
+    for f in &feats {
+        if let Some((_, _)) = matcher.match_feature(&rect.rig, &rl, &rr, f) {
+            // match_feature assumes same-row matching (it only searches the
+            // left's row in the right image), so this only verifies a match
+            // EXISTS. For a true epipolar check we measure the vertical
+            // offset directly with a small search band instead.
+            let (u, v) = (f.x.round() as i32, f.y.round() as i32);
+            let mut best = f64::INFINITY;
+            let mut best_dv = 0.0;
+            for dv in -3i32..=3 {
+                let mut cost = f64::INFINITY;
+                for d in 5..=60 {
+                    let mut s = 0.0;
+                    let mut ok = true;
+                    for j in -2..=2 {
+                        for i in -2..=2 {
+                            let lx = u + i;
+                            let ly = v + j;
+                            let rx = u - d + i;
+                            let ry = v + dv + j;
+                            if !(0..640).contains(&lx)
+                                || !(0..480).contains(&ly)
+                                || !(0..640).contains(&rx)
+                                || !(0..480).contains(&ry)
+                            {
+                                ok = false;
+                                break;
+                            }
+                            let dl = rl[(ly * 640 + lx) as usize] as f64;
+                            let dr = rr[(ry * 640 + rx) as usize] as f64;
+                            let e = dl - dr;
+                            s += e * e;
+                        }
+                        if !ok {
+                            break;
+                        }
+                    }
+                    if ok && s < cost {
+                        cost = s;
+                    }
+                }
+                if cost < best {
+                    best = cost;
+                    best_dv = dv as f64;
+                }
+            }
+            if best.is_finite() {
+                v_offsets.push(best_dv);
+            }
+        }
+    }
+    if v_offsets.is_empty() {
+        eprintln!("no matches found — check rectification");
+        return;
+    }
+    v_offsets.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = v_offsets[v_offsets.len() / 2];
+    let mean: f64 = v_offsets.iter().sum::<f64>() / v_offsets.len() as f64;
+    let p90 = v_offsets[(v_offsets.len() as f64 * 0.9) as usize];
+    eprintln!("stereo-match vertical offset over {} corners: mean {mean:.2} px, median {med:.2} px, p90 {p90:.2} px", v_offsets.len());
+    eprintln!("(rectified epipolar lines should give median ≈ 0 px)");
+}
+
+/// Depth sanity check (M8): rectify a recorded raw pair, stereo-match +
+/// triangulate with the real intrinsics, and report the depth distribution.
+/// With the factory calibration the depths should be metric-plausible
+/// (roughly 0.5–10 m for an indoor scene), where the old hardcoded rig
+/// (fx=500, baseline 0.12) systematically mis-scaled everything.
+fn run_depth_check(dir: &str) {
+    let (left_c, right_c, left_t_right) = neuromancer_tracker::cam_calib::fallback_calib_for_probe();
+    let rect = Rectifier::new(&left_c, &right_c, left_t_right);
+    let read = |side: &str| -> Vec<u8> {
+        let p = format!("{dir}/{side}_0000.raw");
+        std::fs::read(&p).unwrap_or_else(|e| panic!("cannot read {p}: {e}"))
+    };
+    let (raw_l, raw_r) = (read("left"), read("right"));
+    let (rl, rr) = rect.apply(&raw_l, &raw_r);
+    let rig = &rect.rig;
+    let matcher = StereoMatcher::new(5, 0.5, 10.0);
+    let feats: Vec<Point2<f64>> = detect_corners_fast(&rl, 640, 480, 20)
+        .into_iter()
+        .filter(|c| c.x > 60.0 && c.x < 580.0 && c.y > 60.0 && c.y < 420.0)
+        .collect();
+    eprintln!("{} corners", feats.len());
+    let mut depths: Vec<f64> = Vec::new();
+    for f in &feats {
+        let Some((d, _)) = matcher.match_feature(rig, &rl, &rr, f) else { continue };
+        let Some(p) = matcher.triangulate(rig, f, d) else { continue };
+        depths.push(p.z);
+    }
+    depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if depths.is_empty() {
+        eprintln!("no depths");
+        return;
+    }
+    let p = |q: f64| depths[(depths.len() as f64 * q) as usize];
+    let n = depths.len() as f64;
+    let mean: f64 = depths.iter().sum::<f64>() / n;
+    let med = p(0.5);
+    eprintln!("depths n={}  p10={:.2}  med={:.2}  p90={:.2}  max={:.1} m   mean={:.2} m", depths.len(), p(0.1), med, p(0.9), depths[depths.len()-1], mean);
+    eprintln!("fraction within [0.3, 20] m: {:.0}%", depths.iter().filter(|z| **z >= 0.3 && **z <= 20.0).count() as f64 / n * 100.0);
 }

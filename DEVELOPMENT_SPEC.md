@@ -818,8 +818,61 @@ at the crate root as third-party code.
 
 | M | Deliverable | Verification | Status |
 |---|-------------|--------------|--------|
-| M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **PENDING** |
+| M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **DONE 2026-08-04 — see D.7; real-scene pose stability is M9** |
 | M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **PENDING** |
+
+### D.7 M8 calibration wiring (2026-08-04)
+
+M8 replaces the hardcoded rectified rig (`fx=fy=500`, cx=320, cy=240,
+baseline 0.12 m) with the **glasses' on-device factory calibration**
+(`NrealLight::cameras()` → `CameraDescriptor` from the `SLAM_camera`
+config JSON) and rectifies each raw frame before the VO pipeline:
+
+- **Intrinsics** (per camera): left `fx=234.46 fy=234.47 cx=325.16
+  cy=245.73`, right `fx=234.40 fy=234.87 cx=318.99 cy=214.08`; distortion
+  `kc` (k1..p2, OpenCV order) from device config. `cam_probe --calib`
+  dumps them; `cam_probe --depth-check`/`--rect-check` verify on recorded
+  frames.
+- **Stereo extrinsics**: `left_t_right = imu_to_camera_left⁻¹ ∘
+  imu_to_camera_right` — verified to reproduce the raw `leftcam_q_rightcam`
+  rotation (0.0119 rad) and give a **+X baseline of 0.103 m** (the old
+  hardcoded 0.12 was ~20% off).
+- **Rectification** (`neuromancer-vo::rectify`): Bouguet-style rotations +
+  radial/tangential undistortion, precomputed inverse remaps applied with
+  bilinear sampling per frame. `Rectifier::apply` runs before
+  FAST/KLT/stereo in both live and replay paths.
+- **Head-frame alignment**: the visual pose is expressed in the IMU/head
+  frame via `world_T_head = world_T_cam · imu_to_camera_left` — the first
+  pose is exactly the IMU offset, so visual YPR is comparable to the P1 IMU
+  YPR (cross-checked in M9).
+- Fallback: replay mode (no device) uses this unit's captured constants
+  (`cam_probe --calib`, 2026-08-04); the tracker only probes the live
+  device in hardware mode (avoids MCU contention in parallel tests).
+- Vendored `ar-drivers` got a defensive fix in the config parser
+  (`config.len().saturating_sub(4)` — an empty config read previously
+  panicked when the SLAM camera held the interface).
+
+**Verification (M8 acceptance — PASSED):**
+- **Rectification: epipolar lines horizontal** — stereo-match vertical
+  offset on a recorded rectified pair: median **0.00 px**, mean 0.21 px
+  (the raw pair is vertically misaligned by ~30 px: cy differs 245.7 vs
+  214.1).
+- **Metric depth sanity**: triangulated depths on two recorded pairs
+  (`/tmp/spike_seq`, `/tmp/m8_seq`) are 100% within [0.3, 20] m, median
+  ~0.6–1.0 m — plausible indoor scale (the old rig mis-scaled).
+- Synthetic tests unchanged (20 vo tests incl. 3 new rectifier tests;
+  full workspace 85 tests green; clippy clean).
+- Live: `camera calibration: live device (baseline 0.103 m, coverage
+  97.1%)` at startup; ~7 fps sustained (rectification adds per-frame
+  remap cost).
+
+**Remaining (M9):** real-scene pose stability. RANSAC still returns a
+pose even when the inlier set is degenerate (0 inliers), producing
+explosive inter-frame motion on low-texture/motion-blur frames — the
+median inter-pose delta on a *still* headset should be ~0 but is
+meter-scale on some frames. First M9 candidates: minimum-inlier gate in
+`ransac_motion`, tighter feature/quality filters, and keyframe
+management.
 
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's

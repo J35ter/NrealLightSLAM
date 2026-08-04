@@ -4,6 +4,7 @@
 
 pub mod axis;
 pub mod calib;
+pub mod cam_calib;
 pub mod cli;
 pub mod imu;
 pub mod jsonl;
