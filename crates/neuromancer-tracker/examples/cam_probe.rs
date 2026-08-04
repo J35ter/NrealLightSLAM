@@ -326,7 +326,7 @@ fn run_stats(seconds: f64) {
 fn dump_calibration() {
     use ar_drivers::ARGlasses;
 
-    let mut glasses = match ar_drivers::nreal_light::NrealLight::new() {
+    let glasses = match ar_drivers::nreal_light::NrealLight::new() {
         Ok(g) => g,
         Err(e) => {
             eprintln!("cannot open Nreal Light: {e}");
