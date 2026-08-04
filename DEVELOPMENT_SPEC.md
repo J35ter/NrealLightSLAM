@@ -819,7 +819,7 @@ at the crate root as third-party code.
 | M | Deliverable | Verification | Status |
 |---|-------------|--------------|--------|
 | M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **DONE 2026-08-04 — see D.7; real-scene pose stability is M9** |
-| M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **PENDING** |
+| M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **IN PROGRESS — see D.8: max-depth rejection + RANSAC gate + keyframe advance landed; residual drift tuning open** |
 
 ### D.7 M8 calibration wiring (2026-08-04)
 
@@ -873,6 +873,41 @@ median inter-pose delta on a *still* headset should be ~0 but is
 meter-scale on some frames. First M9 candidates: minimum-inlier gate in
 `ransac_motion`, tighter feature/quality filters, and keyframe
 management.
+
+### D.8 M9 real-scene VO tuning (2026-08-04, first tranche)
+
+Three changes land the biggest real-scene stability win; all verified on
+live hardware (glasses, j35ter-A5):
+
+- **Max triangulation distance (enclosed-space constraint).**
+  `StereoMatcher::triangulate` now rejects any point whose depth falls
+  outside `[min_depth, max_depth]` — the tracker uses `[0.5, 10] m`.
+  Before this, subpixel disparity refinement could push points past the
+  window (measured max 16.1 m); now `cam_probe --depth-check` reports
+  **max = 10.0 m exactly** (4967 corners, median 0.95 m). The glasses are
+  an indoor device; beyond 10 m the ~2.4 px disparity is noise, not
+  geometry.
+- **RANSAC minimum-inlier gate.** `ransac_motion` takes `min_inliers` and
+  returns `None` when the refined inlier set is below it; `estimate_motion`
+  uses `(src.len() / 40).max(20)` (~2.5% of correspondences, floor 20).
+  Measured on real scenes: garbage poses have inliers 1–29, valid poses
+  ≥30, so the gate cleanly separates them. Degenerate frames (bas-relief,
+  motion blur, low texture) now return `None` instead of injecting
+  explosive drift.
+- **Keyframe always advances.** `VoPipeline::process` previously did
+  `estimate_motion(...)?` — on failure the keyframe stayed stuck on the
+  first frame. The first frame is the dark auto-exposure warm-up (13
+  features), so the tracker could never recover: every subsequent frame
+  tracked against the same bad keyframe and failed the gate. Now the
+  keyframe advances every frame regardless of motion success; only the
+  accumulated pose is held back on failure.
+
+**Measured live (before → after):** poses sane (< 10 m) **9% → 100%**
+(two 10–12 s runs: 20/20 and 23/23 sane); |pos| median 4.1e14 m → ~0.24 m;
+inter-pose delta median 0.04–0.08 m, max 0.2–0.5 m (bounded, no
+explosions). The residual per-frame delta on a still headset is VO jitter
+— drift tuning (RANSAC budget, feature quality, keyframe thinning, and
+eventually IMU fusion in P2b) remains the open part of M9.
 
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's

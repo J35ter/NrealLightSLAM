@@ -121,10 +121,19 @@ impl StereoMatcher {
     }
 
     /// Triangulate a matched feature into the left-camera frame (meters).
-    /// `disparity` in px; returns the 3D point or `None` when the disparity is
-    /// non-positive (behind/at infinity).
+    /// `disparity` in px; returns the 3D point or `None` when the disparity
+    /// is non-positive (behind/at infinity) **or the resulting depth falls
+    /// outside the matcher's `[min_depth, max_depth]` window**.
+    ///
+    /// Enclosed-space constraint: features beyond `max_depth` (default 10 m)
+    /// are rejected — disparity is unreliable that far out (a 10 m depth at
+    /// this baseline is only ~2.4 px of disparity), and the glasses are
+    /// meant for indoor use.
     pub fn triangulate(&self, rig: &StereoRig, f: &Point2<f64>, disparity: f64) -> Option<Point3<f64>> {
         let z = rig.depth_from_disparity(disparity)?;
+        if z < self.min_depth || z > self.max_depth {
+            return None;
+        }
         Some(rig.left.unproject(f, z))
     }
 }
@@ -152,6 +161,27 @@ mod tests {
         assert!(p.x.abs() < 1e-9 && p.y.abs() < 1e-9);
         // Non-positive disparity → None.
         assert!(matcher.triangulate(&rig, &Point2::new(320.0, 240.0), 0.0).is_none());
+    }
+
+    /// Enclosed-space constraint (M9): features beyond `max_depth` are
+    /// rejected even if a disparity can be computed. At this baseline 10 m is
+    /// only ~2.4 px of disparity, so such points are noise, not geometry.
+    #[test]
+    fn triangulation_rejects_beyond_max_depth() {
+        let rig = rig(); // fx=500, baseline=0.12
+        let matcher = StereoMatcher::new(5, 0.5, 10.0);
+        // 20 m → disparity fx*b/z = 500*0.12/20 = 3 px. Computable, but the
+        // matcher window [0.5, 10] m must reject it.
+        let d = rig.disparity_at(20.0);
+        assert!(d > 0.0, "disparity {d}");
+        assert!(matcher.triangulate(&rig, &Point2::new(320.0, 240.0), d).is_none());
+        // Just inside the window (10 m) is accepted.
+        let d10 = rig.disparity_at(10.0);
+        let p = matcher.triangulate(&rig, &Point2::new(320.0, 240.0), d10).unwrap();
+        assert!((p.z - 10.0).abs() < 1e-9);
+        // Below min_depth (0.5 m) rejected too.
+        let d05 = rig.disparity_at(0.4);
+        assert!(matcher.triangulate(&rig, &Point2::new(320.0, 240.0), d05).is_none());
     }
 
     /// Matched depth must match the renderer's ground-truth depth map.

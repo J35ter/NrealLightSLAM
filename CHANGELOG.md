@@ -75,6 +75,15 @@ All notable changes per release. Semver per spec §5.6
   sanity 100% within [0.3, 20] m on recorded frames, 85 tests green,
   clippy clean. Remaining km-scale pose on some real frames is M9
   (RANSAC minimum-inlier gate, feature/keyframe management).
+- **M9 first tranche: real-scene pose stability.** (1) Enclosed-space
+  constraint: `StereoMatcher::triangulate` rejects points outside
+  `[0.5, 10] m` — max measured depth now 10.0 m exactly (was 16.1 m).
+  (2) RANSAC minimum-inlier gate (`(n/40).max(20)`): degenerate frames
+  return None instead of an explosive pose. (3) Keyframe always advances
+  in `VoPipeline` — previously a failed estimate left `prev` stuck on the
+  dark auto-exposure first frame and the tracker never recovered. Live
+  result: poses sane (< 10 m) 9% → 100% (20/20, 23/23 in two runs),
+  |pos| median 4.1e14 → ~0.24 m, inter-pose delta bounded (max 0.2–0.5 m).
 - **`ar-drivers` vendored + `get_frame` read fix (M8 action item):**
   `vendor/ar-drivers` replaces the crates.io dep. `get_frame` now
   accumulates reads into a persistent buffer and extracts exactly one
@@ -87,9 +96,8 @@ All notable changes per release. Semver per spec §5.6
 
 ### Pending
 
-- M8: wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye
-  rectification into the rig; head-frame alignment (`imu_to_camera`).
-- M9: real-scene VO tuning on `/tmp/spike_seq`.
+- M9 (rest): drift tuning — RANSAC budget, feature quality filters,
+  keyframe thinning; IMU fusion in P2b.
 
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 

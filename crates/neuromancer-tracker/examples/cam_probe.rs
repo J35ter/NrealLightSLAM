@@ -291,7 +291,11 @@ fn run_stats(seconds: f64) {
                 }
 
                 // RANSAC + GN refinement (same params as estimate_motion).
-                let est = ransac_motion(&src, &dst, &px_b, cam, 300, 3.0);
+                let gate = std::env::var("PROBE_MIN_INL")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| (src.len() / 40).max(20));
+                let est = ransac_motion(&src, &dst, &px_b, cam, 300, 3.0, gate);
                 let (inliers, pose) = match &est {
                     Some(e) => (Some(e.inliers), e.pose),
                     None => (None, Isometry3::identity()),

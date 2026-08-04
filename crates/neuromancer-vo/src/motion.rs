@@ -121,6 +121,11 @@ fn refine_reprojection(
 /// RANSAC rigid-motion estimation from 3D–3D correspondences (Umeyama
 /// minimal solver) validated by reprojection into the `cam` image, refined
 /// by Gauss–Newton over the inlier set.
+///
+/// Returns `None` when fewer than `min_inliers` correspondences survive
+/// reprojection validation — a degenerate estimate (bas-relief / low
+/// texture / motion blur) must not be trusted, otherwise a single bad frame
+/// injects explosive pose drift into the accumulated trajectory (M9).
 pub fn ransac_motion(
     src3d: &[Point3<f64>],
     dst3d: &[Point3<f64>],
@@ -128,6 +133,7 @@ pub fn ransac_motion(
     cam: &CameraModel,
     iterations: usize,
     threshold_px: f64,
+    min_inliers: usize,
 ) -> Option<MotionEstimate> {
     let n = src3d.len();
     if n < 3 {
@@ -167,7 +173,7 @@ pub fn ransac_motion(
 
     // Re-estimate from all inliers, then refine against reprojection error.
     let idx: Vec<usize> = (0..n).filter(|&m| reproj_err(&r, &t, m) < threshold_px).collect();
-    if idx.len() < 3 {
+    if idx.len() < min_inliers {
         return None;
     }
     let (rf, tf) = umeyama(
@@ -189,6 +195,9 @@ pub fn ransac_motion(
             }
         })
         .count();
+    if inliers < min_inliers {
+        return None;
+    }
     Some(MotionEstimate {
         pose: fine,
         inliers,
@@ -242,10 +251,18 @@ pub fn estimate_motion(
     if src.len() < 6 {
         return None;
     }
+    // M9: reject degenerate estimates — require the inlier set to be a
+    // meaningful fraction of the correspondences (2.5%), with an absolute
+    // floor. Measured on real scenes (2026-08-04): garbage poses have
+    // inliers 1–29, valid poses ≥30; a gate of ~20–30 cleanly separates
+    // them. Frames that fail (bas-relief, motion blur, low texture) return
+    // None and the pipeline keeps the previous keyframe instead of injecting
+    // explosive drift into the trajectory.
+    let min_inliers = (src.len() / 40).max(20);
     // 3 px reprojection threshold: stereo depth noise (~1-2%) shifts
     // off-center points by a few px — too tight a threshold starves the
     // inlier set that the refinement averages over.
-    ransac_motion(&src, &dst, &px_b, &rig.left, 300, 3.0)
+    ransac_motion(&src, &dst, &px_b, &rig.left, 300, 3.0, min_inliers)
 }
 
 #[cfg(test)]

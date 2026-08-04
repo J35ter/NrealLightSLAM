@@ -73,6 +73,16 @@ impl VoPipeline {
                     5,
                     12,
                 );
+                // Advance the keyframe to the current frame REGARDLESS of
+                // motion-estimate success. Early-returning on failure (the
+                // old `?`) left `prev` stuck on the first frame — if that
+                // frame was dark/low-texture (e.g. auto-exposure warm-up),
+                // every subsequent estimate failed against the same bad
+                // keyframe and the tracker never recovered (M9).
+                let feats = detect_corners_fast(left, self.rig.left.width, self.rig.left.height, FAST_THRESHOLD)
+                    .into_iter()
+                    .take(MAX_FEATURES)
+                    .collect();
                 let est = estimate_motion(
                     &self.rig,
                     &self.matcher,
@@ -82,18 +92,20 @@ impl VoPipeline {
                     right,
                     &prev.features,
                     &tracked,
-                )?;
-                self.pose *= est.pose;
+                );
                 self.prev = Some(PrevFrame {
                     left: left.to_vec(),
                     right: right.to_vec(),
-                    features: detect_corners_fast(left, self.rig.left.width, self.rig.left.height, FAST_THRESHOLD)
-                        .into_iter()
-                        .take(MAX_FEATURES)
-                        .collect(),
+                    features: feats,
                 });
                 self.frames += 1;
-                Some(self.pose)
+                match est {
+                    Some(e) => {
+                        self.pose *= e.pose;
+                        Some(self.pose)
+                    }
+                    None => None,
+                }
             }
         }
     }
