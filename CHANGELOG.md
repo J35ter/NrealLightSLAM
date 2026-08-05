@@ -109,15 +109,18 @@ All notable changes per release. Semver per spec §5.6
   tighter min-inlier gate.
 - P2b (rest): motion-heavy fusion validation; time-aligned VO
   corrections; fusion replay/record.
-- **IMU-only minimal fork: `neuromancer-imu-tracker`.** New workspace
-  crate linking ONLY `neuromancer-ahrs` + vendored `ar-drivers` (no
-  `neuromancer-vo`, no `neuromancer-fusion`, no tracker lib — verified
-  zero symbol references, 576 KB release binary). Same Phase-1 pipeline
-  as `neuromancer-tracker --input imu` (gyro-bias calib → Mahony
-  kp=1/ki=0.005 → YXZ ypr → 2 Hz HUD + optional classic UDP), live
-  output byte-identical to the main tracker's IMU mode. CLI:
-  `--no-udp --host --port --udp-rate --hud-rate --gyro-calib --kp --ki
-  --units`.
+- **Main tracker restructure + GUI.** `neuromancer-tracker` is now the
+  MAIN crate: minimal IMU-only core (lib + CLI over shared
+  `Settings`/`ImuTracker`/`UdpSink`), no visual/VO code linked. New
+  `neuromancer-tracker-gui` (egui/eframe, Linux + Windows): embeds the
+  core on a thread, Settings menu with one widget per CLI switch, TOML
+  settings file shared with the CLI (`--config`/`--save-config`,
+  `~/.config/neuromancer-tracker/settings.toml`), HUD, and a toggleable
+  3D wireframe cube of the glasses rotation (painter-side projection).
+  The old Phase-2 tracker (VO + fusion) moved to `neuromancer-tracker-full`
+  (lib crate name kept as `neuromancer_tracker`; binary
+  `neuromancer-tracker-full`). Windows build follows after Linux is
+  stable (eframe is cross-platform).
 - **P2b first tranche: IMU+visual ESKF fusion.** New `neuromancer-fusion`
   crate (Solà error-state Kalman: p/v/q/b_g/b_a, IMU predict + VO
   correct + accelerometer gravity anchor). `--input imu+visual` runs two

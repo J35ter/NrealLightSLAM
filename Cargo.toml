@@ -3,8 +3,9 @@ resolver = "2"
 members = [
     "crates/neuromancer-ahrs",
     "crates/neuromancer-fusion",
-    "crates/neuromancer-imu-tracker",
     "crates/neuromancer-tracker",
+    "crates/neuromancer-tracker-full",
+    "crates/neuromancer-tracker-gui",
     "crates/neuromancer-vo",
 ]
 

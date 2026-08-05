@@ -1,0 +1,37 @@
+[package]
+name = "neuromancer-tracker-full"
+description = "Full Nreal Light tracker (Phase 2 research): stereo VO + IMU-only + ESKF fusion. Kept for the visual/fusion work; the main tracker is neuromancer-tracker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The lib keeps its original crate name (neuromancer_tracker) so the internal
+# `neuromancer_tracker::` paths stay valid; only the package/binary name
+# changed to mark this as the secondary research crate.
+[lib]
+name = "neuromancer_tracker"
+
+[[bin]]
+name = "neuromancer-tracker-full"
+path = "src/main.rs"
+
+[dependencies]
+neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+neuromancer-fusion = { path = "../neuromancer-fusion" }
+neuromancer-vo = { path = "../neuromancer-vo" }
+# ar-drivers is vendored (vendor/ar-drivers, patched get_frame to fix the
+# mid-frame alignment state — see DEVELOPMENT_SPEC.md D.5 M8 action item).
+# 0.4.3's `nreal` feature map omits `rusb`, but the Nreal Light backend
+# (nreal_light.rs) uses rusb/libusb unconditionally — enabling the optional
+# `rusb` dependency explicitly is required to compile it.
+ar-drivers = { path = "../../vendor/ar-drivers", default-features = false, features = ["nreal", "rusb"] }
+# SIGINT handling: direct sigaction handler (flag set in signal context,
+# so a Ctrl-C that interrupts the blocking USB read is never lost to a
+# cross-thread scheduling race — see main.rs install_signal_handler).
+# Linux-only for now; P4 (Windows) will revisit signal handling.
+libc = "0.2"
+
+[dev-dependencies]
+# Only the cam_probe example needs nalgebra types directly (replicating the
+# VO pipeline funnel); the library depends on it transitively via neuromancer-vo.
+nalgebra = "0.32"

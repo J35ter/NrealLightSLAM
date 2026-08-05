@@ -3,12 +3,13 @@
 Phase 1 (3-DoF) implementation of [`DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md):
 reads the Nreal Light IMU (accelerometer + gyroscope) over USB, fuses it with a
 Mahony complementary filter, and streams yaw/pitch/roll to **Opentrack** over
-UDP, with a 2 Hz on-screen HUD for visual verification.
+UDP, with a 2 Hz on-screen HUD for visual verification, plus a GUI
+(Linux + Windows) with a settings file and a 3D cube visualization.
 
 ```
-Nreal Light ──USB──▶ [ImuSource] ──▶ [Mahony AHRS] ──▶ [axis mapping] ──▶ [UDP → Opentrack]
-                       │                                                     └─▶ [HUD 2 Hz]
-                       └─▶ [--log-imu]  (raw samples, JSONL)     [--log-pose] (filtered pose)
+Nreal Light ──USB──▶ [ImuTracker] ──▶ [Mahony AHRS] ──▶ [UDP → Opentrack]
+                       │                        └─▶ [HUD 2 Hz]
+                       └─▶ [neuromancer-tracker-gui: HUD + 3D cube + settings]
 ```
 
 ## Workspace
@@ -16,76 +17,98 @@ Nreal Light ──USB──▶ [ImuSource] ──▶ [Mahony AHRS] ──▶ [ax
 | Crate | Role |
 |-------|------|
 | `crates/neuromancer-ahrs` | Dependency-free AHRS: Mahony filter, quaternion math, YXZ Tait-Bryan YPR (RUB frame) — reusable standalone |
-| `crates/neuromancer-tracker` | The tracker binary (lib + bin) |
+| `crates/neuromancer-tracker` | **Main tracker**: minimal IMU-only core (lib + CLI) — no visual/VO code linked |
+| `crates/neuromancer-tracker-gui` | GUI (Linux + Windows, egui/eframe): embeds the main tracker, TOML settings menu ↔ CLI switches, HUD, 3D cube of glasses rotation |
+| `crates/neuromancer-tracker-full` | Full Phase-2 tracker (stereo VO + ESKF fusion) — research crate, kept for the visual/fusion work |
 
 ## Build & test (canonical, spec §5.2)
 
 ```bash
 cargo build --release          # Linux dev build
-cargo test --workspace         # ahrs (13) + tracker unit (18) + integration (10)
+cargo test --workspace         # ahrs + fusion + vo + tracker units
 ```
 
-Windows (`mini` @ 192.168.0.231, P4): native build preferred — `cargo build --release --target x86_64-pc-windows-msvc` (Rust 1.97.1 + VS Build Tools already verified there).
+Windows (`mini` @ 192.168.0.231, P4): native build preferred — `cargo build --release --target x86_64-pc-windows-msvc` (Rust 1.97.1 + VS Build Tools already verified there). The GUI uses egui/eframe which builds on both Linux and Windows.
 
 ## Quick start (hardware)
 
 1. Plug the Nreal Light into USB.
 2. Start Opentrack with the **UDP over network** tracker listening on
    `127.0.0.1:4242`.
-3. Run:
+3. Run the CLI:
 
 ```bash
 neuromancer-tracker --hud                 # UDP out (default) + 2 Hz HUD
 ```
 
+or the GUI:
+
+```bash
+neuromancer-tracker-gui                   # settings menu + HUD + 3D cube
+```
+
 Rotate the headset — HUD shows live degrees, Opentrack gets the pose.
+
+## Settings file (GUI ↔ CLI)
+
+Both the GUI and the CLI read/write the same TOML settings file
+(`~/.config/neuromancer-tracker/settings.toml` on Linux, `%APPDATA%\neuromancer-tracker\settings.toml`
+on Windows). Every settings field maps 1:1 to a CLI switch:
+
+| Settings field | CLI switch |
+|----------------|------------|
+| `no_udp` | `--no-udp` |
+| `host`, `port`, `udp_rate` | `--host`, `--port`, `--udp-rate` |
+| `hud_rate` | `--hud-rate` |
+| `gyro_calib` | `--gyro-calib` |
+| `kp`, `ki` | `--kp`, `--ki` |
+| `rad` | `--units deg\|rad` |
+| `show_cube` | (GUI only — 3D cube toggle) |
+
+CLI ↔ file interop: `neuromancer-tracker --config PATH` loads a file,
+`--save-config` writes the current settings out.
 
 ## Testing without hardware: `--replay`
 
-The tracker's production input is USB-exclusive (spec §2.3), but for
+> These replay/log flags belong to the **full** tracker (`neuromancer-tracker-full`,
+> the Phase-2 research crate). The main `neuromancer-tracker` is USB-exclusive
+> by design (no replay, no IMU log — spec §2.3).
+
+The full tracker's production input is USB-exclusive, but for
 development/verification you can feed a JSONL IMU log through the same
 `ImuSource` abstraction:
 
 ```bash
 # record once (needs glasses):  append raw IMU to a file
-neuromancer-tracker --log-imu /tmp/imu.jsonl --no-udp
+neuromancer-tracker-full --log-imu /tmp/imu.jsonl --no-udp
 
 # replay anywhere (dev box, CI): paced like a live stream
-neuromancer-tracker --replay /tmp/imu.jsonl --hud
+neuromancer-tracker-full --replay /tmp/imu.jsonl --hud
 ```
 
 Replay files use the spec §4.4 IMU log format: `{"t": <monotonic s>, "ax": .., "ay": .., "az": .., "gx": .., "gy": .., "gz": ..}`.
 
-## CLI reference
+## CLI reference — main tracker (`neuromancer-tracker`)
 
 ```
 neuromancer-tracker [OPTIONS]
 
+  --no-udp             Disable UDP output (HUD-only mode)
   --host <IP>          Opentrack host (default 127.0.0.1)
   --port <PORT>        Opentrack UDP port (default 4242)
-  --no-udp             Disable UDP output (HUD-only mode)
-  --protocol <P>       classic|extended  (default classic)      — OQ1: user switch
-  --udp-rate <HZ>      UDP output rate   (default 60)            — G2/§4.2 resolution
-  --units <U>          deg|rad for UDP + pose log (default deg)  — wire-format resolution
-  --hud                Enable 2 Hz on-screen orientation readout
-  --hud-rate <HZ>      HUD update rate (default 2)
+  --udp-rate <HZ>      UDP output rate (default 60)
+  --units <U>          deg|rad for UDP + HUD (default deg)
+  --hud-rate <HZ>      HUD update rate (default 2; 0 = off)
   --kp <FLOAT>         Mahony proportional gain (default 1.0)
   --ki <FLOAT>         Mahony integral gain (default 0.005)
-  --invert-yaw         Invert yaw axis
-  --invert-pitch       Invert pitch axis
-  --invert-roll        Invert roll axis
-  --sensitivity <F>    Output sensitivity multiplier (default 1.0)
-  --log-imu <PATH>     Append raw IMU samples to file (JSONL)
-  --log-pose <PATH>    Append filtered pose to file (JSONL)
-  --replay <PATH>      Dev/testing: read IMU from a JSONL file instead of USB
-  --log-level <LEVEL>  error|warn|info|debug (default error — warnings hidden)
   --gyro-calib <SEC>   Startup gyro-bias calibration window (default 2.0, 0=off)
-  --input <SOURCE>     imu|visual (default imu; visual = P2 6-DoF, IMU fully off)
-  --replay-visual <DIR> Dev/testing: stereo frames dir for --input visual
-  --record-visual <DIR> Record incoming stereo frames to a directory (P2)
-  --version            Print version and exit
+  --config <PATH>      Settings file to load (default: platform config dir)
+  --save-config        Write the current settings to the config file and exit
   --help               Print help and exit
 ```
+
+The GUI's Settings menu edits exactly these fields and saves them to the
+same TOML file (`--save-config` from the CLI does the same).
 
 ## Wire format (spec §4.2 + OQ1)
 
@@ -121,14 +144,17 @@ neuromancer-tracker [OPTIONS]
 
 ## Phase 2 — visual 6-DoF (`--input visual`)
 
+> This is the **full** tracker's feature (`neuromancer-tracker-full`).
+> The main `neuromancer-tracker` is IMU-only by design.
+
 Stereo visual odometry from the Nreal Light SLAM cameras (spec Appendix D):
 640×480 grayscale stereo at ~30 fps → FAST corners → KLT tracking → epipolar
 stereo depth → RANSAC motion → incremental 6-DoF pose. The IMU is never
 opened in this mode.
 
 ```bash
-./target/release/neuromancer-tracker --input visual --hud   # hardware cameras
-./target/release/neuromancer-tracker --input visual --replay-visual <dir> --hud
+./target/release/neuromancer-tracker-full --input visual --hud   # hardware cameras
+./target/release/neuromancer-tracker-full --input visual --replay-visual <dir> --hud
 ```
 
 - `--replay-visual <DIR>` reads raw frames (`left_XXXX.raw`/`right_XXXX.raw`);

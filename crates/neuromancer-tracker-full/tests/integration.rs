@@ -334,7 +334,7 @@ fn hud_formats_degrees_line() {
 // ---- process-level checks (exit codes, spec §3.2) ----
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_neuromancer-tracker")
+    env!("CARGO_BIN_EXE_neuromancer-tracker-full")
 }
 
 #[test]

@@ -1,0 +1,14 @@
+[package]
+name = "neuromancer-tracker-gui"
+description = "Nreal Light head tracker GUI (Linux + Windows): embeds the minimal IMU core, TOML settings menu mirroring the CLI switches, HUD, and a 3D cube visualization of the glasses rotation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neuromancer-tracker = { path = "../neuromancer-tracker" }
+neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+# egui/eframe — immediate-mode GUI, one codebase for Linux + Windows.
+eframe = "0.32"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
