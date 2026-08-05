@@ -106,7 +106,19 @@ All notable changes per release. Semver per spec §5.6
 
 - M9 (rest): residual still-headset jitter + motion-heavy validation of
   the 1.5 px threshold — feature quality filters, keyframe thinning,
-  tighter min-inlier gate; IMU fusion in P2b.
+  tighter min-inlier gate.
+- P2b (rest): motion-heavy fusion validation; time-aligned VO
+  corrections; fusion replay/record.
+- **P2b first tranche: IMU+visual ESKF fusion.** New `neuromancer-fusion`
+  crate (Solà error-state Kalman: p/v/q/b_g/b_a, IMU predict + VO
+  correct + accelerometer gravity anchor). `--input imu+visual` runs two
+  threads + shared clock. Live still-headset (20 s): endpoint drift
+  0.107/0.145 m (VO-only 0.21 m), per-step median sub-mm at 1 kHz,
+  yaw drift −1.6/−4.0° (VO-only ±12° wander), no dz bias. Found live:
+  VO-world gravity is camera-anchored (anchored from accel mean + first
+  VO pose), body-frame orientation innovation, gravity anchor needed at
+  IMU rate, real-scene noise tuning. Spec D.10; 93 tests green, clippy
+  clean.
 
 ## v0.1.0 — 2026-08-04 — Phase 1 (3-DoF) release
 

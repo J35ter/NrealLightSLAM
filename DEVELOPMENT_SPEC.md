@@ -820,6 +820,8 @@ at the crate root as third-party code.
 |---|-------------|--------------|--------|
 | M8 | Wire `ar-drivers` `CameraDescriptor` intrinsics + fisheye rectification into the rig; head-frame alignment (`imu_to_camera`) | intrinsics sanity on recorded spike frames; synthetic tests unchanged | **DONE 2026-08-04 — see D.7; real-scene pose stability is M9** |
 | M9 | Real-scene VO tuning on `/tmp/spike_seq` (feature starvation, depth scale, drift) | pose plausibility on recorded session | **IN PROGRESS — see D.8/D.9: max-depth rejection + RANSAC gate + keyframe advance + RANSAC budget tuning landed; residual jitter tuning open** |
+| M10 | `neuromancer-fusion` ESKF core: IMU predict + VO correct + gravity anchor | synthetic trajectory + bias recovery tests | **DONE 2026-08-05 — see D.10; 7 fusion tests incl. no-VO divergence control** |
+| M11 | `--input imu+visual` live fusion (two threads, shared clock) | live still-headset drift vs M9 bar | **DONE 2026-08-05 — endpoint 0.107/0.145 m, yaw −1.6/−4.0°, sub-mm steps at 1 kHz; motion-heavy validation open** |
 
 ### D.7 M8 calibration wiring (2026-08-04)
 
@@ -933,8 +935,67 @@ headset (j35ter-A5):
 **Remaining (M9):** residual per-frame jitter on a still headset, and
 motion-heavy use of the 1.5 px threshold is untested (measured on a
 still headset). Further levers: feature quality filters (FAST score),
-keyframe thinning, tighter min-inlier gate. The real cure for residual
-drift is IMU fusion (P2b, ESKF as originally planned).
+keyframe thinning, tighter min-inlier gate.
+
+### D.10 P2b — IMU+visual ESKF fusion (2026-08-05, first tranche)
+
+The spec's "the real cure for residual drift is IMU fusion (P2b, ESKF
+as originally planned)" is now live: `--input imu+visual` runs the
+full fused pipeline.
+
+- **New crate `neuromancer-fusion`** (nalgebra only; dev-dep
+  `neuromancer-ahrs` for YPR in tests): an error-state Kalman filter
+  (Solà) — nominal state `{p, v, q, b_g, b_a}`, 15-state error
+  covariance, IMU prediction (`predict`), 6-DoF VO correction
+  (`correct`), and an accelerometer gravity-direction correction
+  (`correct_gravity`, the Mahony-style level anchor at IMU rate).
+  World frame y-up, body RUB, quaternion world→body (same conventions
+  as `neuromancer-ahrs`); VO poses are pre-transformed to head frame
+  (M8 `imu_to_cam_left`).
+- **Live wiring (two threads + shared wall-clock epoch):** IMU thread
+  reads ~1 kHz and predicts + gravity-corrects at IMU rate, publishing
+  the fused pose to sinks; camera thread runs the VO pipeline (~7–17
+  fps) and applies each successful pose as a correction. CLI:
+  `--input imu+visual` (aliases `both`, `fusion`) now accepted;
+  replay/record rejected in fusion mode (live-first).
+- **Synthetic validation:** IMU-only dead-reckoning diverges (>0.3 m)
+  while the fused filter tracks a 4 s turn+sinusoid trajectory within
+  0.08 m / 0.05 rad and recovers gyro+accel biases; the gravity
+  correction alone holds a 15°-tilted still attitude without any VO.
+
+**Live still-headset drift (20 s, j35ter-A5):** endpoint drift
+**0.107 / 0.145 m** (two runs; VO-only was 0.21 m), per-step median
+**sub-mm at 1 kHz** output, no systematic dz bias, yaw drift
+**−1.6 / −4.0°** (VO-only wandered ±12°). The fused log runs at IMU
+rate (~20k poses/20 s) — `analyze_pose.py` now auto-detects the rate
+and uses a fused reference (endpoint < 0.21 m, per-step median
+< 0.042 m, |t| < 2, yaw drift < 5°).
+
+**Fixes found live (each was a real bug, caught by the still-headset
+run):**
+- **Gravity in the VO world** is NOT `(0, −9.81, 0)`: the VO world is
+  anchored to the first camera frame (tilted ~14.5° on the headset).
+  Anchored from the calibration-window accel mean and the first VO
+  pose: `g_w = −q_head0⁻¹·f` (the missing inverse left ~2·g·sin(14.5°)
+  of spurious accel → meter-scale position blowup).
+- **Body-frame orientation innovation** (`Log(q̂⁻¹ ⊗ q_m)`, right-error
+  convention): the world-frame version disagrees with the body-frame
+  dynamics once the state leaves identity and diverges exponentially
+  (yaw-only synthetic tests cannot catch it).
+- **No VO → gravity-correction starves**: without `correct_gravity`,
+  roll/pitch rely entirely on sparse jittery VO orientation, which the
+  filter misattributes to gyro bias (bg swung to 0.05 rad/s) and runs
+  away. The accelerometer level anchor fixes it (and matches how the
+  IMU-only Mahony mode behaves).
+- **Measurement-noise tuning** (`EskfConfig::real_scene`): real VO is
+  far noisier than synthetic (M9: inter-pose deltas to 0.17 m, yaw
+  ±12°); tight synthetic-grade noise made the ESKF chase VO jitter.
+
+**Open (P2b):** motion-heavy validation (still-headset only so far);
+accel-bias init is deliberately not done from the still window (one
+equation, six unknowns — learned from VO motion); time-aligned VO
+corrections (currently apply-at-arrival); replay/record in fusion mode;
+VO-only `--input visual` unchanged and still passing.
 
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's

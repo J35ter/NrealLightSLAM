@@ -1,0 +1,13 @@
+[package]
+name = "neuromancer-fusion"
+description = "Error-state Kalman filter fusing IMU (gyro+accel) with visual odometry pose for 6-DoF tracking (P2b)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra = "0.32"
+
+[dev-dependencies]
+# YXZ Tait-Bryan ypr extraction in tests (same convention the tracker uses).
+neuromancer-ahrs = { path = "../neuromancer-ahrs" }

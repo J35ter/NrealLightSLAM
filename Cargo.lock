@@ -194,6 +194,14 @@ name = "neuromancer-ahrs"
 version = "0.1.0"
 
 [[package]]
+name = "neuromancer-fusion"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "neuromancer-ahrs",
+]
+
+[[package]]
 name = "neuromancer-tracker"
 version = "0.1.0"
 dependencies = [
@@ -201,6 +209,7 @@ dependencies = [
  "libc",
  "nalgebra",
  "neuromancer-ahrs",
+ "neuromancer-fusion",
  "neuromancer-vo",
 ]
 

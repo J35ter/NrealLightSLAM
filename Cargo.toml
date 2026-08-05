@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/neuromancer-ahrs",
+    "crates/neuromancer-fusion",
     "crates/neuromancer-tracker",
     "crates/neuromancer-vo",
 ]

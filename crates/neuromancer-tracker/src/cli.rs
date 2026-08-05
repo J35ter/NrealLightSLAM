@@ -22,11 +22,13 @@ pub enum Units {
 }
 
 /// Pose input source (P2). `Imu` = Phase-1 3-DoF; `Visual` = 6-DoF from
-/// stereo visual odometry with the IMU fully off (the "IMU off" switch).
+/// stereo visual odometry with the IMU fully off (the "IMU off" switch);
+/// `Fusion` = P2b ESKF fusing live IMU + visual (``--input imu+visual``).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputSource {
     Imu,
     Visual,
+    Fusion,
 }
 
 /// Effective tracker configuration (spec §3.4 + resolved open questions).
@@ -285,14 +287,10 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
                 cfg.input_source = match raw.trim().to_ascii_lowercase().as_str() {
                     "imu" => InputSource::Imu,
                     "visual" => InputSource::Visual,
-                    "both" | "imu+visual" | "fusion" => {
-                        return Err(
-                            "--input imu+visual (fusion) is P2b and not yet implemented".to_string()
-                        )
-                    }
+                    "both" | "imu+visual" | "fusion" => InputSource::Fusion,
                     other => {
                         return Err(format!(
-                            "invalid value for --input: {other:?} (imu|visual)"
+                            "invalid value for --input: {other:?} (imu|visual|imu+visual)"
                         ))
                     }
                 };
@@ -300,7 +298,9 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
             other => return Err(format!("unknown option: {other}")),
         }
     }
-    // Cross-validation: replay modes belong to their input source.
+    // Cross-validation: replay modes belong to their input source. Fusion
+    // needs BOTH live sources (live IMU + live camera); replay/record only
+    // make sense in the single-source modes for now (P2b live-first).
     if cfg.replay.is_some() && cfg.input_source == InputSource::Visual {
         return Err("--replay (IMU log) requires --input imu".to_string());
     }
@@ -309,6 +309,14 @@ pub fn parse(args: Vec<String>) -> Result<ParseOutcome, String> {
     }
     if cfg.record_visual.is_some() && cfg.input_source != InputSource::Visual {
         return Err("--record-visual requires --input visual".to_string());
+    }
+    if cfg.replay.is_some() && cfg.input_source == InputSource::Fusion {
+        return Err("--replay (IMU log) is not supported with --input imu+visual (P2b is live-first)".to_string());
+    }
+    if (cfg.replay_visual.is_some() || cfg.record_visual.is_some())
+        && cfg.input_source == InputSource::Fusion
+    {
+        return Err("--replay-visual/--record-visual are not supported with --input imu+visual (P2b is live-first)".to_string());
     }
     Ok(ParseOutcome::Run(Box::new(cfg)))
 }
@@ -463,13 +471,23 @@ mod tests {
         };
         assert_eq!(c.input_source, InputSource::Imu);
         assert!(run(&["--input", "bogus"]).is_err());
-        // Fusion is P2b — explicitly rejected for now.
-        assert!(run(&["--input", "both"]).is_err());
-        assert!(run(&["--input", "imu+visual"]).is_err());
+        // Fusion (P2b) is now a first-class input source.
+        let ParseOutcome::Run(c) = run(&["--input", "imu+visual"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(c.input_source, InputSource::Fusion);
+        let ParseOutcome::Run(c) = run(&["--input", "fusion"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(c.input_source, InputSource::Fusion);
         // Replay modes must match the input source.
         assert!(run(&["--replay-visual", "/tmp/v", "--input", "imu"]).is_err());
         assert!(run(&["--replay", "/tmp/i.jsonl", "--input", "visual"]).is_err());
         assert!(run(&["--record-visual", "/tmp/v", "--input", "imu"]).is_err());
+        // P2b is live-first: replay/record are rejected with fusion.
+        assert!(run(&["--replay", "/tmp/i.jsonl", "--input", "imu+visual"]).is_err());
+        assert!(run(&["--replay-visual", "/tmp/v", "--input", "imu+visual"]).is_err());
+        assert!(run(&["--record-visual", "/tmp/v", "--input", "imu+visual"]).is_err());
     }
 
     #[test]

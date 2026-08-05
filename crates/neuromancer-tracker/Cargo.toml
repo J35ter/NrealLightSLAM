@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+neuromancer-fusion = { path = "../neuromancer-fusion" }
 neuromancer-vo = { path = "../neuromancer-vo" }
 # ar-drivers is vendored (vendor/ar-drivers, patched get_frame to fix the
 # mid-frame alignment state — see DEVELOPMENT_SPEC.md D.5 M8 action item).
