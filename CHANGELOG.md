@@ -109,6 +109,15 @@ All notable changes per release. Semver per spec §5.6
   tighter min-inlier gate.
 - P2b (rest): motion-heavy fusion validation; time-aligned VO
   corrections; fusion replay/record.
+- **IMU-only minimal fork: `neuromancer-imu-tracker`.** New workspace
+  crate linking ONLY `neuromancer-ahrs` + vendored `ar-drivers` (no
+  `neuromancer-vo`, no `neuromancer-fusion`, no tracker lib — verified
+  zero symbol references, 576 KB release binary). Same Phase-1 pipeline
+  as `neuromancer-tracker --input imu` (gyro-bias calib → Mahony
+  kp=1/ki=0.005 → YXZ ypr → 2 Hz HUD + optional classic UDP), live
+  output byte-identical to the main tracker's IMU mode. CLI:
+  `--no-udp --host --port --udp-rate --hud-rate --gyro-calib --kp --ki
+  --units`.
 - **P2b first tranche: IMU+visual ESKF fusion.** New `neuromancer-fusion`
   crate (Solà error-state Kalman: p/v/q/b_g/b_a, IMU predict + VO
   correct + accelerometer gravity anchor). `--input imu+visual` runs two

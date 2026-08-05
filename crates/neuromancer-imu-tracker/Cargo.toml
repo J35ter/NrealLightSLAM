@@ -1,0 +1,12 @@
+[package]
+name = "neuromancer-imu-tracker"
+description = "Minimal IMU-only fork of the Nreal Light tracker: USB IMU -> Mahony AHRS -> HUD/UDP. No visual/VO/fusion code linked (spec P1, 3-DoF)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neuromancer-ahrs = { path = "../neuromancer-ahrs" }
+ar-drivers = { path = "../../vendor/ar-drivers" }
+# SIGINT handling (blocking USB read interrupt) — Linux-only like the main tracker.
+libc = "0.2"
