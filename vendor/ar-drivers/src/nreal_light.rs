@@ -29,22 +29,24 @@ use crate::{
 
 /// Write one HID packet/payload to the glasses.
 ///
-/// On Windows, HID writes need the leading report-ID byte `0x00` even for
-/// unnumbered reports, otherwise the device ignores the packet (upstream
-/// ar-drivers issue #13/#26 — the Air fix landed upstream, but Nreal Light
-/// was never patched; without it the OV580 never answers `read_config` and
-/// `parse_config` panics on a Null config). On Linux hidraw the plain
-/// payload works.
+/// On Windows, HID writes need the leading report-ID byte `0x00` AND the
+/// write length must equal the device's output-report length — `WriteFile`
+/// fails with ERROR_INVALID_PARAMETER (0x57) otherwise (upstream ar-drivers
+/// issue #13/#26; the Air fix landed upstream, Nreal Light was never
+/// patched). The MCU serializes to exactly 64 bytes; shorter payloads (e.g.
+/// the OV580 7-byte command) are padded to 64. Linux hidraw takes the plain
+/// payload unchanged.
 #[cfg(target_os = "windows")]
 fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
-    let mut report = vec![0u8; 1 + payload.len()];
-    report[1..].copy_from_slice(payload);
+    let mut report = vec![0u8; 65]; // report ID 0x00 + 64-byte report
+    let n = payload.len().min(64);
+    report[1..1 + n].copy_from_slice(&payload[..n]);
     device.write(&report)?;
     Ok(())
 }
 
 /// Non-Windows: write the packet unchanged (hidraw/libusb don't need the
-/// report-ID prefix).
+/// report-ID prefix and accept variable-length writes).
 #[cfg(not(target_os = "windows"))]
 fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
     device.write(payload)?;
