@@ -13,7 +13,3 @@ libc = "0.2"
 # Settings file (TOML) shared with the GUI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-
-[dev-dependencies]
-# hid_probe example: enumerate/open the Nreal HID devices (debugging only).
-hidapi = "2.4"

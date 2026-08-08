@@ -109,6 +109,16 @@ All notable changes per release. Semver per spec §5.6
   tighter min-inlier gate.
 - P2b (rest): motion-heavy fusion validation; time-aligned VO
   corrections; fusion replay/record.
+- **Windows port — IMU connectivity FIXED (P4 risk resolved).** Built
+  `neuromancer-tracker.exe` + `neuromancer-tracker-gui.exe` natively on
+  `mini` (.231). Three ar-drivers fixes (spec D.11): non-fatal OV580
+  config parse (tinyjson Index panics on missing keys), non-fatal MCU
+  init commands (MCU accepts writes but never answers reads on Windows —
+  upstream issue #13; IMU comes from the OV580), and Windows HID writes
+  need NO `0x00` report-ID prefix (opposite of the upstream Air fix; the
+  prefix caused ERROR_INVALID_PARAMETER 0x57). Verified: `NrealLight::new()`
+  OK in ~1.0 s, live AccGyro, CLI at **IMU rate ≈ 912 Hz** with live YPR.
+  No Zadig/WinUSB needed — stock Windows HID driver works.
 - **Main tracker restructure + GUI.** `neuromancer-tracker` is now the
   MAIN crate: minimal IMU-only core (lib + CLI over shared
   `Settings`/`ImuTracker`/`UdpSink`), no visual/VO code linked. New

@@ -499,11 +499,16 @@ also the P4 acceptance target.
 
 | Item | Detail |
 |------|--------|
-| Library | ar-drivers + rusb (libusb bindings) |
-| Driver | Nreal Light needs the **WinUSB** driver bound to its USB interface (via Zadig) on Windows |
-| Risk | rusb/libusb on Windows is well-trodden, but the Nreal Light's specific interfaces must be verified on `mini` |
-| Mitigation | Validate in P4 week 1; fallback: WinUSB via Zadig + documented setup script |
-| Impact if blocked | P4 USB input fails → tracker cannot run on Windows at all (input is USB-exclusive, §2.3) |
+| Library | ar-drivers + hidapi (HID backend) — the Nreal Light IMU/control uses HID, not bulk endpoints |
+| Driver | No Zadig/WinUSB needed for IMU — Windows' native HID driver works (verified 2026-08-08 on `mini`) |
+| Risk | ~~rusb/libusb~~ — resolved: the IMU path is hidapi and works with the stock HID driver |
+| Mitigation | See D.11 for the three ar-drivers Windows fixes that were required |
+| Impact if blocked | ~~P4 USB input fails~~ — verified working: `neuromancer-tracker.exe` streams IMU at ~900 Hz on `mini` |
+
+**RESOLVED 2026-08-08** on `mini` (.231): `neuromancer-tracker.exe` and
+`neuromancer-tracker-gui.exe` both build natively and the IMU streams
+(~900 Hz, live YPR). The three ar-drivers fixes that made Windows work
+are documented in D.11.
 
 This is the **single biggest P4 risk** — Codex should treat it as a
 dependency to de-risk early, not a final-week surprise.
@@ -996,6 +1001,41 @@ accel-bias init is deliberately not done from the still window (one
 equation, six unknowns — learned from VO motion); time-aligned VO
 corrections (currently apply-at-arrival); replay/record in fusion mode;
 VO-only `--input visual` unchanged and still passing.
+
+### D.11 Windows port — IMU connectivity fixes (2026-08-08, `mini` .231)
+
+The GUI + CLI built natively on the Mini on the first try, but the IMU
+produced no data ("no pose yet", no error). Debugging with a step-by-step
+HID probe on the Mini isolated the causes. **Three ar-drivers fixes** were
+required (all in the vendored `vendor/ar-drivers/src/nreal_light.rs`):
+
+1. **`parse_config` panicked** ("Attempted to access to an object with key
+   'IMU' but actually it was Null"): the OV580 config JSON on Windows can
+   lack the `"IMU"` block or be entirely Null. tinyjson's `Index` panics on
+   both non-object access and missing keys — all lookups now use map
+   `.get()` with fallback, and a missing IMU block leaves biases at zero
+   (Mahony estimates bias itself, so this is safe).
+2. **MCU init commands time out** (upstream issue #13 — "the problem is
+   always IMU"): the MCU (VID 0486, PID 573C) accepts writes but never
+   answers reads on Windows. The three init commands (SDK working, ambient
+   light, VSync) are optional features and the IMU stream comes from the
+   OV580, so they're now non-fatal (each costs one 250 ms timeout).
+3. **Windows HID writes need NO `0x00` report-ID prefix** — the opposite of
+   the upstream Air fix (#26). hidapi pads to the device output-report
+   length internally; prefixing `0x00` pushes the buffer over and
+   `WriteFile` fails with ERROR_INVALID_PARAMETER (0x57). `write_hid_packet`
+   is a plain write on every platform (documented, not cfg'd).
+
+**Verified on `mini`:** `NrealLight::new()` OK in ~1.0 s; live AccGyro
+events (accel ~9.65 m/s², sane gyro); full CLI: gyro-bias calibration,
+**IMU rate ≈ 912 Hz**, live YPR. Spec §5.4 risk table updated (no
+Zadig/WinUSB needed — the IMU path is hidapi and works with the stock
+Windows HID driver).
+
+**Notes for the Windows runtime:** the GUI window only renders in an
+interactive desktop session (SSH-launched processes exit silently —
+expected eframe behavior); keep stray tracker processes from holding the
+HID device exclusively (kill before re-plug/retry).
 
 
 - **Incremental VO drifts** (the old SLAM's killer); P2a targets the spec's
