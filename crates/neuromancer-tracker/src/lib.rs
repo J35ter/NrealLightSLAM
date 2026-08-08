@@ -78,15 +78,20 @@ impl Settings {
             }
             "--host" => {
                 self.host = v()?.to_string();
+                // Explicit UDP flags imply UDP output is wanted, overriding a
+                // config file that may have no_udp = true.
+                self.no_udp = false;
                 true
             }
             "--port" => {
                 let raw = v()?;
                 self.port = raw.parse().map_err(|_| format!("invalid port: {raw:?}"))?;
+                self.no_udp = false;
                 true
             }
             "--udp-rate" => {
                 self.udp_rate = parse_nonneg(v()?, flag)?;
+                self.no_udp = false;
                 true
             }
             "--hud-rate" => {

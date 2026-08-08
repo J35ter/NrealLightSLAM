@@ -32,13 +32,17 @@ use std::time::Instant;
 
 use neuromancer_tracker::{ImuTracker, Pose, Settings, UdpSink};
 
-/// SIGINT flag: 0 = run, >= 1 = shutdown. Set by the libc handler.
+/// SIGINT flag: 0 = run, >= 1 = shutdown. Set by the libc handler (unix).
+/// On Windows the console's own Ctrl+C handling terminates the process, so
+/// the flag stays 0 and the loop runs until then.
 static CTRL_C: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(unix)]
 extern "C" fn on_sigint(_: libc::c_int) {
     CTRL_C.store(1, Ordering::SeqCst);
 }
 
+#[cfg(unix)]
 fn install_signal_handler() {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
@@ -48,6 +52,11 @@ fn install_signal_handler() {
         libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
     }
 }
+
+// Windows: no custom handler — console Ctrl+C terminates the process, and
+// the blocking USB read is interrupted by process teardown.
+#[cfg(windows)]
+fn install_signal_handler() {}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
