@@ -12,3 +12,8 @@ neuromancer-ahrs = { path = "../neuromancer-ahrs" }
 eframe = "0.32"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Hide the console window (SW_HIDE) without windows_subsystem, which broke
+# the GUI window's visibility on the Mini. winit 0.30-compatible.
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }

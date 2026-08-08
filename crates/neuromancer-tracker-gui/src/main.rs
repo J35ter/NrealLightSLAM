@@ -17,8 +17,22 @@
 //! The rotation quaternion comes from `neuromancer_ahrs::Quat` (world→body,
 //! same convention as the tracker).
 
-// GUI app on Windows: no console window (it's a GUI, not a CLI).
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// GUI app on Windows: stay a console-subsystem app (so the GUI window shows
+// reliably) but hide the console window after startup via ShowWindow(SW_HIDE).
+// Using windows_subsystem=windows made the GUI window invisible on the Mini
+// (eframe keeps it hidden until first paint; the subsystem switch broke
+// that), so we avoid it.
+
+#[cfg(target_os = "windows")]
+fn hide_console() {
+    // ShowWindow on the console, not the GUI window.
+    unsafe {
+        let console = windows_sys::Win32::System::Console::GetConsoleWindow();
+        if console != 0 {
+            let _ = windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(console, 0); // SW_HIDE
+        }
+    }
+}
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -422,6 +436,8 @@ fn view_rotate(r: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "windows")]
+    hide_console();
     dbg_log("main: start");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
