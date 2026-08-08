@@ -28,7 +28,7 @@ fn hide_console() {
     // ShowWindow on the console, not the GUI window.
     unsafe {
         let console = windows_sys::Win32::System::Console::GetConsoleWindow();
-        if console != 0 {
+        if !console.is_null() {
             let _ = windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(console, 0); // SW_HIDE
         }
     }
