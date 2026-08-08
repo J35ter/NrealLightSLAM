@@ -29,25 +29,14 @@ use crate::{
 
 /// Write one HID packet/payload to the glasses.
 ///
-/// On Windows, HID writes need the leading report-ID byte `0x00` AND the
-/// write length must equal the device's output-report length — `WriteFile`
-/// fails with ERROR_INVALID_PARAMETER (0x57) otherwise (upstream ar-drivers
-/// issue #13/#26; the Air fix landed upstream, Nreal Light was never
-/// patched). The MCU serializes to exactly 64 bytes; shorter payloads (e.g.
-/// the OV580 7-byte command) are padded to 64. Linux hidraw takes the plain
-/// payload unchanged.
-#[cfg(target_os = "windows")]
-fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
-    let mut report = vec![0u8; 65]; // report ID 0x00 + 64-byte report
-    let n = payload.len().min(64);
-    report[1..1 + n].copy_from_slice(&payload[..n]);
-    device.write(&report)?;
-    Ok(())
-}
-
-/// Non-Windows: write the packet unchanged (hidraw/libusb don't need the
-/// report-ID prefix and accept variable-length writes).
-#[cfg(not(target_os = "windows"))]
+/// This exists as a named wrapper to document a Windows quirk: hidapi's
+/// `write()` pads the buffer to the device's output-report length internally
+/// and expects the payload WITHOUT a report-ID prefix for single-report
+/// devices. Verified empirically on Windows (OV580): a bare
+/// `[2,cmd,subcmd,0,0,0,0]` works (hidapi pads to 64 and writes 64 bytes);
+/// prefixing `0x00` pushes it over the report length and WriteFile fails
+/// with ERROR_INVALID_PARAMETER (0x57). Linux hidraw takes the plain
+/// payload unchanged, so this is a plain write on every platform.
 fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
     device.write(payload)?;
     Ok(())
@@ -468,20 +457,34 @@ impl Ov580 {
     }
 
     fn parse_config(&mut self) -> Result<()> {
-        // XXX: This will panic if config is not in expected format.
-        //      should probably return Err() instead.
-        let cfg = &self.config_json["IMU"]["device_1"];
-        self.accelerometer_bias = Self::parse_vector(&cfg["accel_bias"]);
-        self.gyro_bias = Self::parse_vector(&cfg["gyro_bias"]);
+        // The config JSON layout varies by glasses firmware/device (and the
+        // OV580 read path on Windows can return a different structure). Only
+        // the IMU bias values are optional calibration hints — the Mahony
+        // filter estimates bias itself, so a missing/unparseable "IMU" block
+        // is not fatal: leave biases at zero and continue. (Previously this
+        // panicked, which made Windows unusable.)
+        let imu = &self.config_json["IMU"]["device_1"];
+        if let (Some(accel), Some(gyro)) = (
+            Self::parse_vector_opt(&imu["accel_bias"]),
+            Self::parse_vector_opt(&imu["gyro_bias"]),
+        ) {
+            self.accelerometer_bias = accel;
+            self.gyro_bias = gyro;
+        }
         Ok(())
     }
 
-    fn parse_vector(json: &JsonValue) -> Vector3<f32> {
-        Vector3::new(
-            *json[0].get::<f64>().unwrap() as f32,
-            *json[1].get::<f64>().unwrap() as f32,
-            *json[2].get::<f64>().unwrap() as f32,
-        )
+    fn parse_vector_opt(json: &JsonValue) -> Option<Vector3<f32>> {
+        match json {
+            JsonValue::Array(a) if a.len() >= 3 => {
+                let get = |i: usize| a[i].get::<f64>();
+                match (get(0), get(1), get(2)) {
+                    (Some(x), Some(y), Some(z)) => Some(Vector3::new(x as f32, y as f32, z as f32)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     fn command(&self, cmd: u8, subcmd: u8) -> Result<Vec<u8>> {
