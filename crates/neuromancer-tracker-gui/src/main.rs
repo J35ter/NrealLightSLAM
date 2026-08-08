@@ -188,7 +188,7 @@ impl eframe::App for TrackerApp {
         #[cfg(target_os = "windows")]
         {
             while let Ok(event) = MenuEvent::receiver().try_recv() {
-                let id = event.id.0.as_ref();
+                let id = event.id.as_ref(); // &str (MenuId AsRef<str>)
                 if id == "show" {
                     self.show_window(ctx);
                 } else if id == "quit" {
