@@ -458,35 +458,45 @@ impl Ov580 {
 
     fn parse_config(&mut self) -> Result<()> {
         // The config JSON layout varies by glasses firmware/device (and the
-        // OV580 read path on Windows can return a different structure). Only
-        // the IMU bias values are optional calibration hints — the Mahony
-        // filter estimates bias itself, so a missing/unparseable "IMU" block
-        // is not fatal: leave biases at zero and continue. (Previously this
-        // panicked, which made Windows unusable.)
-        let imu = &self.config_json["IMU"]["device_1"];
-        if let (Some(accel), Some(gyro)) = (
-            Self::parse_vector_opt(&imu["accel_bias"]),
-            Self::parse_vector_opt(&imu["gyro_bias"]),
-        ) {
-            self.accelerometer_bias = accel;
-            self.gyro_bias = gyro;
+        // OV580 read path on Windows can return a different structure, or
+        // even Null if read_config found nothing). Only the IMU bias values
+        // are optional calibration hints — the Mahony filter estimates bias
+        // itself, so a missing/unparseable "IMU" block is not fatal: leave
+        // biases at zero and continue. (tinyjson's `Index` panics on missing
+        // keys, so use map lookups — previously this panicked, which made
+        // Windows unusable.)
+        let imu = match &self.config_json {
+            JsonValue::Object(root) => match root.get("IMU") {
+                Some(JsonValue::Object(imu)) => match imu.get("device_1") {
+                    Some(JsonValue::Object(dev)) => Some(dev),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(dev) = imu {
+            if let (Some(accel), Some(gyro)) = (
+                Self::parse_vector_opt(dev.get("accel_bias").unwrap_or(&JsonValue::Null)),
+                Self::parse_vector_opt(dev.get("gyro_bias").unwrap_or(&JsonValue::Null)),
+            ) {
+                self.accelerometer_bias = accel;
+                self.gyro_bias = gyro;
+            }
         }
         Ok(())
     }
 
     fn parse_vector_opt(json: &JsonValue) -> Option<Vector3<f32>> {
-        match json {
-            JsonValue::Array(a) if a.len() >= 3 => {
-                let get = |i: usize| a[i].get::<f64>();
-                match (get(0), get(1), get(2)) {
-                    (Some(x), Some(y), Some(z)) => {
-                        Some(Vector3::new(*x as f32, *y as f32, *z as f32))
-                    }
-                    _ => None,
+        if let JsonValue::Array(a) = json {
+            if a.len() >= 3 {
+                let get = |i: usize| a[i].get::<f64>().copied();
+                if let (Some(x), Some(y), Some(z)) = (get(0), get(1), get(2)) {
+                    return Some(Vector3::new(x as f32, y as f32, z as f32));
                 }
             }
-            _ => None,
         }
+        None
     }
 
     fn command(&self, cmd: u8, subcmd: u8) -> Result<Vec<u8>> {
