@@ -196,7 +196,8 @@ impl eframe::App for TrackerApp {
                 }
             }
             while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-                if matches!(event.event, tray_icon::ClickType::Left) {
+                use tray_icon::{MouseButton, MouseButtonState};
+                if let tray_icon::TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                     self.show_window(ctx);
                 }
             }
