@@ -27,12 +27,6 @@ use eframe::egui;
 use neuromancer_ahrs::Quat;
 use neuromancer_tracker::{ImuTracker, Pose, Settings, UdpSink};
 
-#[cfg(target_os = "windows")]
-use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem},
-    TrayIcon, TrayIconBuilder, TrayIconEvent,
-};
-
 // ---------------------------------------------------------------------------
 // Shared state between the IMU thread and the UI
 // ---------------------------------------------------------------------------
@@ -68,14 +62,6 @@ struct TrackerApp {
     /// Once set, every displayed/emitted pose is relative to it until a new
     /// reset replaces it — the zero persists until a new zero is chosen.
     zero_ref: Option<Quat>,
-    /// Kept alive so the tray icon stays visible; the field itself is never
-    /// read (dropping the TrayIcon removes the icon).
-    #[cfg(target_os = "windows")]
-    #[allow(dead_code)]
-    tray: Option<TrayIcon>,
-    /// True once the window has been hidden to the tray.
-    #[cfg(target_os = "windows")]
-    hidden_to_tray: bool,
 }
 
 impl TrackerApp {
@@ -90,9 +76,6 @@ impl TrackerApp {
             UdpSink::bind(&settings.host, settings.port, settings.udp_rate).ok()
         };
 
-        #[cfg(target_os = "windows")]
-        let tray = build_tray();
-
         let mut app = TrackerApp {
             settings,
             live: Arc::new(Mutex::new(LiveState::default())),
@@ -102,10 +85,6 @@ impl TrackerApp {
             running: false,
             last_settings_note: None,
             zero_ref: None,
-            #[cfg(target_os = "windows")]
-            tray,
-            #[cfg(target_os = "windows")]
-            hidden_to_tray: false,
         };
         let _ = cc; // theme/fonts later if needed
         app.start_tracker();
@@ -128,16 +107,6 @@ impl TrackerApp {
         if let Some(pose) = self.live.lock().unwrap().pose {
             self.zero_ref = Some(pose.q);
             self.last_settings_note = Some("zeroed — current orientation is now 0,0,0 (Space to re-zero)".to_string());
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn show_window(&mut self, ctx: &egui::Context) {
-        if self.hidden_to_tray {
-            self.hidden_to_tray = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
     }
 
@@ -186,31 +155,6 @@ impl eframe::App for TrackerApp {
         // appearing to "run ~0.5 s then hang ~1 s" in bursts.
         ctx.request_repaint();
         ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60 fps
-
-        // --- Tray (Windows): menu clicks + icon clicks ---------------------
-        #[cfg(target_os = "windows")]
-        {
-            while let Ok(event) = MenuEvent::receiver().try_recv() {
-                let id = event.id.as_ref(); // &str (MenuId AsRef<str>)
-                if id == "show" {
-                    self.show_window(ctx);
-                } else if id == "quit" {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-            while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-                use tray_icon::{MouseButton, MouseButtonState};
-                if let tray_icon::TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                    self.show_window(ctx);
-                }
-            }
-            // Minimize → hide to the system tray (window gone from taskbar).
-            let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-            if minimized && !self.hidden_to_tray {
-                self.hidden_to_tray = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            }
-        }
 
         // --- Space key: re-zero (when the window is focused) ---------------
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
@@ -456,56 +400,6 @@ fn view_rotate(r: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
         r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2],
         r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2],
     ]
-}
-
-// ---------------------------------------------------------------------------
-// System tray (Windows): minimize-to-tray + restore + quit
-// ---------------------------------------------------------------------------
-
-/// Build the tray icon with a Show/Quit menu. Returns None on failure (the
-/// GUI still works without the tray).
-#[cfg(target_os = "windows")]
-fn build_tray() -> Option<TrayIcon> {
-    use tray_icon::menu::{MenuId, PredefinedMenuItem, Submenu};
-
-    let show = MenuItem::with_id(MenuId::new("show"), "Show window", true, None);
-    let quit = MenuItem::with_id(MenuId::new("quit"), "Quit", true, None);
-
-    let menu = Menu::new();
-    let sub = Submenu::new("Nreal Light Tracker", true);
-    let _ = sub.append(&show);
-    let _ = sub.append(&quit);
-    let _ = sub.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&sub);
-
-    // 32x32 RGBA icon: simple cube-ish glyph (light gray on dark).
-    let (w, h) = (32u32, 32u32);
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    for y in 0..h {
-        for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let in_cube = (x >= 6 && x < 26) && (y >= 6 && y < 26);
-            if in_cube {
-                // Face gradient: darker bottom-right edge for depth.
-                let shade = 140u8.saturating_add(((25 - x.min(25) as i32).max(0) as u8) / 4)
-                    .saturating_add(((25 - y.min(25) as i32).max(0) as u8) / 4);
-                rgba[i..i + 4].copy_from_slice(&[shade, shade, 200, 255]);
-            } else {
-                rgba[i + 3] = 0; // transparent
-            }
-        }
-    }
-    let icon = match tray_icon::Icon::from_rgba(rgba, w, h) {
-        Ok(i) => i,
-        Err(_) => return None,
-    };
-
-    TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_icon(icon)
-        .with_tooltip("Nreal Light Tracker")
-        .build()
-        .ok()
 }
 
 // ---------------------------------------------------------------------------

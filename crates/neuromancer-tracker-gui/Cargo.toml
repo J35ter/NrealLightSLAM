@@ -12,7 +12,3 @@ neuromancer-ahrs = { path = "../neuromancer-ahrs" }
 eframe = "0.32"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-# System tray (minimize-to-tray) — Windows only; winit 0.30 matches eframe.
-tray-icon = "0.24"
