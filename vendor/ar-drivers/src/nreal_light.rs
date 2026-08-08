@@ -200,25 +200,27 @@ impl NrealLight {
             last_heartbeat: std::time::Instant::now(),
             ov580,
         };
-        // Send a "Yes, I am a working SDK" command
-        // This is needed for SBS 3D display to work.
-        result.run_command(Packet {
+        // Send a "Yes, I am a working SDK" command.
+        // Needed for SBS 3D display. On Windows the MCU may not answer
+        // (issue #13 upstream): these are optional features, and the IMU
+        // stream comes from the OV580, so a timeout is not fatal.
+        let _ = result.run_command(Packet {
             category: b'@',
             cmd_id: b'3',
             data: vec![b'1'],
-        })?;
-        // Enable the Ambient Light event
-        result.run_command(Packet {
+        });
+        // Enable the Ambient Light event (optional; MCU may not answer).
+        let _ = result.run_command(Packet {
             category: b'1',
             cmd_id: b'L',
             data: vec![b'1'],
-        })?;
-        // Enable VSync event
-        result.run_command(Packet {
+        });
+        // Enable VSync event (optional; MCU may not answer).
+        let _ = result.run_command(Packet {
             category: b'1',
             cmd_id: b'N',
             data: vec![b'1'],
-        })?;
+        });
         Ok(result)
     }
 
