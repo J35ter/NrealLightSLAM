@@ -1,42 +1,32 @@
-//! HID probe: replicate NrealLight::new() exactly — MCU commands then OV580 init.
+//! HID probe: MCU read behavior — write @3 then read; also enumerate paths.
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
 use hidapi::HidApi;
 
-fn mcu_cmd(dev: &hidapi::HidDevice, cat: u8, id: u8, data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut pkt = [0u8; 64];
-    pkt[0] = 2; pkt[1] = b':'; pkt[2] = cat; pkt[3] = b':'; pkt[4] = id; pkt[5] = b':';
-    let n = data.len().min(50);
-    pkt[6..6 + n].copy_from_slice(&data[..n]);
-    let rest = b":0:00000000:3";
-    pkt[6 + n..6 + n + rest.len()].copy_from_slice(rest);
-    dev.write(&pkt).map_err(|e| format!("write {e:?}"))?;
-    for i in 0..64 {
-        let mut buf = [0u8; 64];
-        match dev.read_timeout(&mut buf, 250) {
-            Ok(0) => return Err("timeout read 0".into()),
-            Ok(_) => {
-                if buf[0] == 2 && buf[2] == cat + 1 {
-                    return Ok(buf.to_vec());
-                }
-                // else skip
-            }
-            Err(e) => return Err(format!("read err {e:?}")),
-        }
-    }
-    Err("no ack in 64".into())
-}
-
 fn main() {
     let api = HidApi::new().unwrap();
+    // List all 0486:573c devices with paths
+    println!("=== MCU devices ===");
+    for d in api.device_list().filter(|d| d.vendor_id() == 0x0486 && d.product_id() == 0x573c) {
+        println!("  path={:?}", d.path());
+    }
+    // open the FIRST by enumeration (what open(vid,pid) does)
     let mcu = api.open(0x0486, 0x573c).expect("MCU open");
-    println!("MCU open OK");
-    println!("MCU @3 (SDK)  -> {:?}", mcu_cmd(&mcu, b'@', b'3', &[b'1']).map(|v| v[..6].to_vec()));
-    println!("MCU 1L (amb)  -> {:?}", mcu_cmd(&mcu, b'1', b'L', &[b'1']).map(|v| v[..6].to_vec()));
-    println!("MCU 1N (vsync)-> {:?}", mcu_cmd(&mcu, b'1', b'N', &[b'1']).map(|v| v[..6].to_vec()));
-    let ov = api.open(0x05a9, 0x0680).expect("OV580 open");
-    println!("OV580 open OK");
-    // then OV580 init (0x19,0x0 etc.) — brief
-    println!("OV580 0x19,0x0 -> {}", {
-        ov.write(&[2, 0x19, 0x0, 0, 0, 0, 0]).is_ok()
-    });
+    println!("MCU open OK — write @3 then read");
+    let mut pkt = [0u8; 64];
+    pkt[0] = 2; pkt[1] = b':'; pkt[2] = b'@'; pkt[3] = b':'; pkt[4] = b'3'; pkt[5] = b':';
+    pkt[6] = b'1';
+    let rest = b":0:00000000:3";
+    pkt[7..7 + rest.len()].copy_from_slice(rest);
+    println!("  write: {:?}", mcu.write(&pkt));
+    for i in 0..6 {
+        let mut buf = [0u8; 64];
+        match mcu.read_timeout(&mut buf, 500) {
+            Ok(0) => println!("  read#{i}: timeout (0)"),
+            Ok(n) => println!("  read#{i}: {n} bytes [{:02x?}]", &buf[..n.min(12)]),
+            Err(e) => {
+                println!("  read#{i} ERR: {e:?}");
+                break;
+            }
+        }
+    }
 }
