@@ -27,6 +27,30 @@ use crate::{
     util::crc32_adler, ARGlasses, CameraDescriptor, DisplayMode, Error, GlassesEvent, Result, Side,
 };
 
+/// Write one HID packet/payload to the glasses.
+///
+/// On Windows, HID writes need the leading report-ID byte `0x00` even for
+/// unnumbered reports, otherwise the device ignores the packet (upstream
+/// ar-drivers issue #13/#26 — the Air fix landed upstream, but Nreal Light
+/// was never patched; without it the OV580 never answers `read_config` and
+/// `parse_config` panics on a Null config). On Linux hidraw the plain
+/// payload works.
+#[cfg(target_os = "windows")]
+fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
+    let mut report = vec![0u8; 1 + payload.len()];
+    report[1..].copy_from_slice(payload);
+    device.write(&report)?;
+    Ok(())
+}
+
+/// Non-Windows: write the packet unchanged (hidraw/libusb don't need the
+/// report-ID prefix).
+#[cfg(not(target_os = "windows"))]
+fn write_hid_packet(device: &HidDevice, payload: &[u8]) -> Result<()> {
+    device.write(payload)?;
+    Ok(())
+}
+
 /// The main structure representing a connected Nreal Light glasses
 pub struct NrealLight {
     device: HidDevice,
@@ -283,26 +307,24 @@ impl NrealLight {
             // Heartbeat packet
             // Not sent as "run_command" as sometimes the Glasses don't bother to
             // answer. E.g. when one of the buttons is pressed while it is running.
-            self.device.write(
-                &Packet {
-                    category: b'@',
-                    cmd_id: b'K',
-                    ..Default::default()
-                }
-                .serialize()
-                .ok_or(Error::Other("Packet serialization failed"))?,
-            )?;
+            let packet = Packet {
+                category: b'@',
+                cmd_id: b'K',
+                ..Default::default()
+            }
+            .serialize()
+            .ok_or(Error::Other("Packet serialization failed"))?;
+            write_hid_packet(&self.device, &packet)?;
             self.last_heartbeat = now;
         }
         Ok(())
     }
 
     fn run_command(&mut self, command: Packet) -> Result<Vec<u8>> {
-        self.device.write(
-            &command
-                .serialize()
-                .ok_or(Error::Other("Packet serialization failed"))?,
-        )?;
+        let packet = command
+            .serialize()
+            .ok_or(Error::Other("Packet serialization failed"))?;
+        write_hid_packet(&self.device, &packet)?;
 
         for _ in 0..64 {
             let packet = self
@@ -461,7 +483,7 @@ impl Ov580 {
     }
 
     fn command(&self, cmd: u8, subcmd: u8) -> Result<Vec<u8>> {
-        self.device.write(&[2, cmd, subcmd, 0, 0, 0, 0])?;
+        write_hid_packet(&self.device, &[2, cmd, subcmd, 0, 0, 0, 0])?;
         for _ in 0..64 {
             let mut result = [0u8; 0x80];
             let result_size = self.device.read_timeout(&mut result, OV_580_TIMEOUT)?;
