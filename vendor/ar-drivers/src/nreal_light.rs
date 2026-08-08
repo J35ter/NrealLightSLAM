@@ -479,7 +479,9 @@ impl Ov580 {
             JsonValue::Array(a) if a.len() >= 3 => {
                 let get = |i: usize| a[i].get::<f64>();
                 match (get(0), get(1), get(2)) {
-                    (Some(x), Some(y), Some(z)) => Some(Vector3::new(x as f32, y as f32, z as f32)),
+                    (Some(x), Some(y), Some(z)) => {
+                        Some(Vector3::new(*x as f32, *y as f32, *z as f32))
+                    }
                     _ => None,
                 }
             }
