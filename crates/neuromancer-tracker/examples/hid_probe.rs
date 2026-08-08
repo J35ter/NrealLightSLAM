@@ -1,4 +1,5 @@
-//! HID probe: find MCU and OV580 output report lengths by trial writes.
+//! HID probe: try write(), send_output_report(), send_feature_report() on
+//! MCU + OV580 to find the working OV580 command path on Windows.
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
 use hidapi::HidApi;
 
@@ -11,15 +12,25 @@ fn trial(api: &HidApi, vid: u16, pid: u16, name: &str) {
         }
     };
     println!("{name} open OK");
-    // OV580 command() payload: [2, cmd, subcmd, 0, 0, 0, 0]
-    let pkt7 = [2u8, 0x19, 0x0, 0, 0, 0, 0];
-    for n in [7usize, 8, 16, 32, 64] {
-        let mut buf = vec![0u8; 1 + n];
-        buf[1..1 + pkt7.len().min(n)].copy_from_slice(&pkt7[..pkt7.len().min(n)]);
-        match dev.write(&buf) {
-            Ok(w) => println!("  {name} write len {} (+1 ID) -> OK wrote {w}", n),
-            Err(e) => println!("  {name} write len {} (+1 ID) -> FAIL {e:?}", n),
-        }
+    let pkt = [2u8, 0x19, 0x0, 0, 0, 0, 0]; // OV580 command(0x19,0): turn IMU stream off
+    // write() — interrupt OUT endpoint
+    match dev.write(&pkt) {
+        Ok(w) => println!("  {name} write() -> OK wrote {w}"),
+        Err(e) => println!("  {name} write() -> FAIL {e:?}"),
+    }
+    // send_output_report() — control endpoint Set_Report(Output)
+    let mut buf = vec![0u8; 65];
+    buf[1..8].copy_from_slice(&pkt);
+    match dev.send_output_report(&buf) {
+        Ok(_) => println!("  {name} send_output_report() -> OK"),
+        Err(e) => println!("  {name} send_output_report() -> FAIL {e:?}"),
+    }
+    // send_feature_report() — control endpoint Set_Report(Feature)
+    let mut fbuf = vec![0u8; 65];
+    fbuf[1..8].copy_from_slice(&pkt);
+    match dev.send_feature_report(&fbuf) {
+        Ok(_) => println!("  {name} send_feature_report() -> OK"),
+        Err(e) => println!("  {name} send_feature_report() -> FAIL {e:?}"),
     }
 }
 
