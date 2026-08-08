@@ -1,7 +1,34 @@
-//! HID probe: step through the OV580 init commands manually to find where
-//! PacketTimeout occurs on Windows.
+//! HID probe: step the full OV580 init: 0x19,0x0 -> 0x14,0x0 -> 0x15,0x0 -> 0x19,0x1
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
 use hidapi::HidApi;
+
+fn cmd(dev: &hidapi::HidDevice, cmd: u8, sub: u8, label: &str) -> bool {
+    println!("--- {label}: command({cmd:#x},{sub:#x}) ---");
+    if let Err(e) = dev.write(&[2, cmd, sub, 0, 0, 0, 0]) {
+        eprintln!("  write FAIL {e:?}");
+        return false;
+    }
+    // read until ack (buf[0]==2), max 16 reads of 250ms
+    for i in 0..16 {
+        let mut buf = [0u8; 0x80];
+        match dev.read_timeout(&mut buf, 250) {
+            Ok(0) => {}
+            Ok(n) => {
+                if buf[0] == 2 {
+                    println!("  ack#{i}: [{:02x?}...]", &buf[..n.min(8)]);
+                    return true;
+                }
+                // else: skip non-ack (e.g. IMU 01 reports)
+            }
+            Err(e) => {
+                eprintln!("  read#{i} ERR {e:?}");
+                return false;
+            }
+        }
+    }
+    eprintln!("  no ack in 16 reads (PacketTimeout equivalent)");
+    false
+}
 
 fn main() {
     let api = match HidApi::new() {
@@ -19,36 +46,8 @@ fn main() {
         }
     };
     println!("OV580 open OK");
-
-    // Step 1: command(0x19, 0x0) — turn off IMU stream (from Ov580::new).
-    println!("--- command(0x19, 0x0) write ---");
-    match ov.write(&[2, 0x19, 0x0, 0, 0, 0, 0]) {
-        Ok(w) => println!("  write OK ({w} bytes)"),
-        Err(e) => {
-            eprintln!("  write FAIL: {e:?}");
-            return;
-        }
-    }
-    // Then read the ack (command() reads up to 64 x 250ms).
-    println!("--- read ack ---");
-    let mut acked = false;
-    for i in 0..8 {
-        let mut buf = [0u8; 0x80];
-        match ov.read_timeout(&mut buf, 250) {
-            Ok(0) => println!("  read {i}: timeout (0 bytes)"),
-            Ok(n) => {
-                println!("  read {i}: {n} bytes: {:02x?}...", &buf[..n.min(16)]);
-                if buf[0] == 2 {
-                    acked = true;
-                    println!("  ACKED (buf[0]==2)");
-                    break;
-                }
-            }
-            Err(e) => {
-                eprintln!("  read {i} ERR: {e:?}");
-                break;
-            }
-        }
-    }
-    println!("acked: {acked}");
+    let _ = cmd(&ov, 0x19, 0x0, "turn IMU stream off");
+    let _ = cmd(&ov, 0x14, 0x0, "config start");
+    let _ = cmd(&ov, 0x15, 0x0, "config chunk");
+    let _ = cmd(&ov, 0x19, 0x1, "turn IMU stream on");
 }
