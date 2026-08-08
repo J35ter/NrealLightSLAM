@@ -1,32 +1,54 @@
-//! HID probe: run the real NrealLight::new() + read a few IMU events.
+//! HID probe: step through the OV580 init commands manually to find where
+//! PacketTimeout occurs on Windows.
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
-use ar_drivers::ARGlasses;
+use hidapi::HidApi;
 
 fn main() {
-    println!("=== ar_drivers::NrealLight::new() ===");
-    match ar_drivers::nreal_light::NrealLight::new() {
-        Ok(mut g) => {
-            println!("NrealLight::new() OK — reading events (8 s)...");
-            let mut got = 0;
-            for _ in 0..40 {
-                match g.read_event() {
-                    Ok(ev) => {
-                        got += 1;
-                        let brief = format!("{ev:?}");
-                        let brief = brief.chars().take(110).collect::<String>();
-                        println!("  event #{got}: {brief}");
-                        if got >= 4 {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        println!("  read_event err: {e:?}");
-                        break;
-                    }
+    let api = match HidApi::new() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("HidApi::new() failed: {e:?}");
+            return;
+        }
+    };
+    let ov = match api.open(0x05a9, 0x0680) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("OV580 open FAILED: {e:?}");
+            return;
+        }
+    };
+    println!("OV580 open OK");
+
+    // Step 1: command(0x19, 0x0) — turn off IMU stream (from Ov580::new).
+    println!("--- command(0x19, 0x0) write ---");
+    match ov.write(&[2, 0x19, 0x0, 0, 0, 0, 0]) {
+        Ok(w) => println!("  write OK ({w} bytes)"),
+        Err(e) => {
+            eprintln!("  write FAIL: {e:?}");
+            return;
+        }
+    }
+    // Then read the ack (command() reads up to 64 x 250ms).
+    println!("--- read ack ---");
+    let mut acked = false;
+    for i in 0..8 {
+        let mut buf = [0u8; 0x80];
+        match ov.read_timeout(&mut buf, 250) {
+            Ok(0) => println!("  read {i}: timeout (0 bytes)"),
+            Ok(n) => {
+                println!("  read {i}: {n} bytes: {:02x?}...", &buf[..n.min(16)]);
+                if buf[0] == 2 {
+                    acked = true;
+                    println!("  ACKED (buf[0]==2)");
+                    break;
                 }
             }
-            println!("events received: {got}");
+            Err(e) => {
+                eprintln!("  read {i} ERR: {e:?}");
+                break;
+            }
         }
-        Err(e) => eprintln!("NrealLight::new() FAILED: {e:?}"),
     }
+    println!("acked: {acked}");
 }
