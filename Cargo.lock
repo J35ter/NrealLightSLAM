@@ -1901,6 +1901,7 @@ name = "neuromancer-tracker"
 version = "0.1.0"
 dependencies = [
  "ar-drivers",
+ "hidapi",
  "libc",
  "neuromancer-ahrs",
  "serde",

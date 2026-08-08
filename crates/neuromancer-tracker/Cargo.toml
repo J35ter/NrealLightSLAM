@@ -13,3 +13,6 @@ libc = "0.2"
 # Settings file (TOML) shared with the GUI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+hidapi = "2.4"
