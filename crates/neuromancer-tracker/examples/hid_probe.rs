@@ -1,53 +1,47 @@
-//! HID probe: step the full OV580 init: 0x19,0x0 -> 0x14,0x0 -> 0x15,0x0 -> 0x19,0x1
+//! HID probe: replicate read_config() fully (loop 0x15,0x0 until buf[1]!=1)
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
 use hidapi::HidApi;
 
-fn cmd(dev: &hidapi::HidDevice, cmd: u8, sub: u8, label: &str) -> bool {
-    println!("--- {label}: command({cmd:#x},{sub:#x}) ---");
-    if let Err(e) = dev.write(&[2, cmd, sub, 0, 0, 0, 0]) {
-        eprintln!("  write FAIL {e:?}");
-        return false;
-    }
-    // read until ack (buf[0]==2), max 16 reads of 250ms
-    for i in 0..16 {
+fn cmd_ack(dev: &hidapi::HidDevice, cmd: u8, sub: u8) -> Option<Vec<u8>> {
+    dev.write(&[2, cmd, sub, 0, 0, 0, 0]).ok()?;
+    for _ in 0..64 {
         let mut buf = [0u8; 0x80];
         match dev.read_timeout(&mut buf, 250) {
-            Ok(0) => {}
+            Ok(0) => return None,
             Ok(n) => {
                 if buf[0] == 2 {
-                    println!("  ack#{i}: [{:02x?}...]", &buf[..n.min(8)]);
-                    return true;
+                    return Some(buf[..n].to_vec());
                 }
-                // else: skip non-ack (e.g. IMU 01 reports)
             }
-            Err(e) => {
-                eprintln!("  read#{i} ERR {e:?}");
-                return false;
-            }
+            Err(_) => return None,
         }
     }
-    eprintln!("  no ack in 16 reads (PacketTimeout equivalent)");
-    false
+    None
 }
 
 fn main() {
-    let api = match HidApi::new() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("HidApi::new() failed: {e:?}");
-            return;
-        }
-    };
-    let ov = match api.open(0x05a9, 0x0680) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("OV580 open FAILED: {e:?}");
-            return;
-        }
-    };
+    let api = HidApi::new().unwrap();
+    let ov = api.open(0x05a9, 0x0680).expect("OV580 open");
     println!("OV580 open OK");
-    let _ = cmd(&ov, 0x19, 0x0, "turn IMU stream off");
-    let _ = cmd(&ov, 0x14, 0x0, "config start");
-    let _ = cmd(&ov, 0x15, 0x0, "config chunk");
-    let _ = cmd(&ov, 0x19, 0x1, "turn IMU stream on");
+    println!("cmd 0x19,0x0 -> {:?}", cmd_ack(&ov, 0x19, 0x0).map(|v| v[..8].to_vec()));
+    println!("cmd 0x14,0x0 -> {:?}", cmd_ack(&ov, 0x14, 0x0).map(|v| v[..8].to_vec()));
+    let mut total = 0usize;
+    let mut chunks = 0usize;
+    loop {
+        match cmd_ack(&ov, 0x15, 0x0) {
+            Some(part) if part.len() > 1 && part[1] == 1 => {
+                let len = part[2] as usize;
+                chunks += 1;
+                total += len;
+                if chunks <= 3 {
+                    println!("chunk#{chunks}: buf[0..3]=[{:02x?}] len={len}", &part[..3]);
+                }
+            }
+            other => {
+                println!("config loop ended after {chunks} chunks, {total} bytes: {:?}", other.map(|v| v[..4].to_vec()));
+                break;
+            }
+        }
+    }
+    println!("done");
 }
