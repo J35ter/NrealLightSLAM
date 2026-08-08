@@ -68,7 +68,10 @@ struct TrackerApp {
     /// Once set, every displayed/emitted pose is relative to it until a new
     /// reset replaces it — the zero persists until a new zero is chosen.
     zero_ref: Option<Quat>,
+    /// Kept alive so the tray icon stays visible; the field itself is never
+    /// read (dropping the TrayIcon removes the icon).
     #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
     tray: Option<TrayIcon>,
     /// True once the window has been hidden to the tray.
     #[cfg(target_os = "windows")]
