@@ -1,47 +1,42 @@
-//! HID probe: replicate read_config() fully (loop 0x15,0x0 until buf[1]!=1)
+//! HID probe: replicate NrealLight::new() exactly — MCU commands then OV580 init.
 //! Usage: cargo run --release -p neuromancer-tracker --example hid_probe
 use hidapi::HidApi;
 
-fn cmd_ack(dev: &hidapi::HidDevice, cmd: u8, sub: u8) -> Option<Vec<u8>> {
-    dev.write(&[2, cmd, sub, 0, 0, 0, 0]).ok()?;
-    for _ in 0..64 {
-        let mut buf = [0u8; 0x80];
+fn mcu_cmd(dev: &hidapi::HidDevice, cat: u8, id: u8, data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut pkt = [0u8; 64];
+    pkt[0] = 2; pkt[1] = b':'; pkt[2] = cat; pkt[3] = b':'; pkt[4] = id; pkt[5] = b':';
+    let n = data.len().min(50);
+    pkt[6..6 + n].copy_from_slice(&data[..n]);
+    let rest = b":0:00000000:3";
+    pkt[6 + n..6 + n + rest.len()].copy_from_slice(rest);
+    dev.write(&pkt).map_err(|e| format!("write {e:?}"))?;
+    for i in 0..64 {
+        let mut buf = [0u8; 64];
         match dev.read_timeout(&mut buf, 250) {
-            Ok(0) => return None,
-            Ok(n) => {
-                if buf[0] == 2 {
-                    return Some(buf[..n].to_vec());
+            Ok(0) => return Err("timeout read 0".into()),
+            Ok(_) => {
+                if buf[0] == 2 && buf[2] == cat + 1 {
+                    return Ok(buf.to_vec());
                 }
+                // else skip
             }
-            Err(_) => return None,
+            Err(e) => return Err(format!("read err {e:?}")),
         }
     }
-    None
+    Err("no ack in 64".into())
 }
 
 fn main() {
     let api = HidApi::new().unwrap();
+    let mcu = api.open(0x0486, 0x573c).expect("MCU open");
+    println!("MCU open OK");
+    println!("MCU @3 (SDK)  -> {:?}", mcu_cmd(&mcu, b'@', b'3', &[b'1']).map(|v| v[..6].to_vec()));
+    println!("MCU 1L (amb)  -> {:?}", mcu_cmd(&mcu, b'1', b'L', &[b'1']).map(|v| v[..6].to_vec()));
+    println!("MCU 1N (vsync)-> {:?}", mcu_cmd(&mcu, b'1', b'N', &[b'1']).map(|v| v[..6].to_vec()));
     let ov = api.open(0x05a9, 0x0680).expect("OV580 open");
     println!("OV580 open OK");
-    println!("cmd 0x19,0x0 -> {:?}", cmd_ack(&ov, 0x19, 0x0).map(|v| v[..8].to_vec()));
-    println!("cmd 0x14,0x0 -> {:?}", cmd_ack(&ov, 0x14, 0x0).map(|v| v[..8].to_vec()));
-    let mut total = 0usize;
-    let mut chunks = 0usize;
-    loop {
-        match cmd_ack(&ov, 0x15, 0x0) {
-            Some(part) if part.len() > 1 && part[1] == 1 => {
-                let len = part[2] as usize;
-                chunks += 1;
-                total += len;
-                if chunks <= 3 {
-                    println!("chunk#{chunks}: buf[0..3]=[{:02x?}] len={len}", &part[..3]);
-                }
-            }
-            other => {
-                println!("config loop ended after {chunks} chunks, {total} bytes: {:?}", other.map(|v| v[..4].to_vec()));
-                break;
-            }
-        }
-    }
-    println!("done");
+    // then OV580 init (0x19,0x0 etc.) — brief
+    println!("OV580 0x19,0x0 -> {}", {
+        ov.write(&[2, 0x19, 0x0, 0, 0, 0, 0]).is_ok()
+    });
 }
