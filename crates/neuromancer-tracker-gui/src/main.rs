@@ -27,6 +27,19 @@ use eframe::egui;
 use neuromancer_ahrs::Quat;
 use neuromancer_tracker::{ImuTracker, Pose, Settings, UdpSink};
 
+/// Debug startup log (works even with windows_subsystem, where stdout is
+/// invisible). Append-only; harmless in production.
+fn dbg_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("gui_debug.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared state between the IMU thread and the UI
 // ---------------------------------------------------------------------------
@@ -149,6 +162,8 @@ impl TrackerApp {
 
 impl eframe::App for TrackerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| dbg_log("update: first frame"));
         // The IMU thread streams poses continuously; egui only repaints when
         // told to, so request a repaint every frame (and again shortly
         // after) — otherwise the HUD/cube freeze between input events,
@@ -407,15 +422,22 @@ fn view_rotate(r: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
+    dbg_log("main: start");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Nreal Light Tracker")
             .with_inner_size([480.0, 440.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    dbg_log("main: run_native");
+    let r = eframe::run_native(
         "neuromancer-tracker-gui",
         options,
-        Box::new(|cc| Ok(Box::new(TrackerApp::new(cc)))),
-    )
+        Box::new(|cc| {
+            dbg_log("creation ctx: building app");
+            Ok(Box::new(TrackerApp::new(cc)))
+        }),
+    );
+    dbg_log("main: run_native returned");
+    r
 }
