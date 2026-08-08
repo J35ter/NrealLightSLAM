@@ -17,11 +17,21 @@
 //! The rotation quaternion comes from `neuromancer_ahrs::Quat` (world→body,
 //! same convention as the tracker).
 
+// GUI app on Windows: no console window (it's a GUI, not a CLI).
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
+use neuromancer_ahrs::Quat;
 use neuromancer_tracker::{ImuTracker, Pose, Settings, UdpSink};
+
+#[cfg(target_os = "windows")]
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    TrayIcon, TrayIconBuilder, TrayIconEvent,
+};
 
 // ---------------------------------------------------------------------------
 // Shared state between the IMU thread and the UI
@@ -54,6 +64,15 @@ struct TrackerApp {
     udp: Option<UdpSink>,
     running: bool,
     last_settings_note: Option<String>,
+    /// Orientation reference (the "zero"). `None` = identity (no reset yet).
+    /// Once set, every displayed/emitted pose is relative to it until a new
+    /// reset replaces it — the zero persists until a new zero is chosen.
+    zero_ref: Option<Quat>,
+    #[cfg(target_os = "windows")]
+    tray: Option<TrayIcon>,
+    /// True once the window has been hidden to the tray.
+    #[cfg(target_os = "windows")]
+    hidden_to_tray: bool,
 }
 
 impl TrackerApp {
@@ -68,6 +87,9 @@ impl TrackerApp {
             UdpSink::bind(&settings.host, settings.port, settings.udp_rate).ok()
         };
 
+        #[cfg(target_os = "windows")]
+        let tray = build_tray();
+
         let mut app = TrackerApp {
             settings,
             live: Arc::new(Mutex::new(LiveState::default())),
@@ -76,10 +98,44 @@ impl TrackerApp {
             udp,
             running: false,
             last_settings_note: None,
+            zero_ref: None,
+            #[cfg(target_os = "windows")]
+            tray,
+            #[cfg(target_os = "windows")]
+            hidden_to_tray: false,
         };
         let _ = cc; // theme/fonts later if needed
         app.start_tracker();
         app
+    }
+
+    /// Current pose transformed by the reset reference (the displayed pose).
+    /// Returns `None` if no pose yet.
+    fn displayed_pose(&self) -> Option<(Quat, [f64; 3])> {
+        let pose = self.live.lock().unwrap().pose?;
+        let q = match self.zero_ref {
+            Some(z) => z.conjugate() * pose.q, // relative to the zero
+            None => pose.q,
+        };
+        Some((q, neuromancer_ahrs::quat_to_ypr(q)))
+    }
+
+    /// Re-zero: the current orientation becomes 0,0,0 until the next reset.
+    fn reset_zero(&mut self) {
+        if let Some(pose) = self.live.lock().unwrap().pose {
+            self.zero_ref = Some(pose.q);
+            self.last_settings_note = Some("zeroed — current orientation is now 0,0,0 (Space to re-zero)".to_string());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn show_window(&mut self, ctx: &egui::Context) {
+        if self.hidden_to_tray {
+            self.hidden_to_tray = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
     }
 
     fn start_tracker(&mut self) {
@@ -128,13 +184,44 @@ impl eframe::App for TrackerApp {
         ctx.request_repaint();
         ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60 fps
 
+        // --- Tray (Windows): menu clicks + icon clicks ---------------------
+        #[cfg(target_os = "windows")]
+        {
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                let id = event.id.0.as_ref();
+                if id == "show" {
+                    self.show_window(ctx);
+                } else if id == "quit" {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                if matches!(event.event, tray_icon::ClickType::Left) {
+                    self.show_window(ctx);
+                }
+            }
+            // Minimize → hide to the system tray (window gone from taskbar).
+            let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+            if minimized && !self.hidden_to_tray {
+                self.hidden_to_tray = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+
+        // --- Space key: re-zero (when the window is focused) ---------------
+        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+            self.reset_zero();
+        }
+
         // Drain the IMU thread's messages.
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 ImuMsg::Pose(p) => {
-                    // Send to Opentrack UDP (rate-gated inside the sink).
+                    // Send to Opentrack UDP (rate-gated inside the sink),
+                    // relative to the current zero.
+                    let ypr = self.displayed_pose().unwrap_or((p.q, p.ypr_rad)).1;
                     if let Some(s) = self.udp.as_mut() {
-                        s.send(if self.settings.rad { p.ypr_rad } else { p.ypr_rad.map(f64::to_degrees) });
+                        s.send(if self.settings.rad { ypr } else { ypr.map(f64::to_degrees) });
                     }
                     self.live.lock().unwrap().pose = Some(p);
                 }
@@ -158,6 +245,10 @@ impl eframe::App for TrackerApp {
                     // from the UI state (the thread exits on USB error).
                 }
                 ui.separator();
+                if ui.button("Reset 0,0,0 (Space)").clicked() {
+                    self.reset_zero();
+                }
+                ui.separator();
                 settings_menu(ui, &mut self.settings, &mut self.last_settings_note);
             });
         });
@@ -165,24 +256,34 @@ impl eframe::App for TrackerApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             let live = self.live.lock().unwrap();
 
-            // Error banner
+            // Error banner — bold, readable.
             if let Some(e) = &live.error {
-                ui.colored_label(egui::Color32::RED, format!("IMU error: {e}"));
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 60, 60),
+                    egui::RichText::new(format!("IMU error: {e}")).strong(),
+                );
             }
             if live.calibrating {
-                ui.colored_label(egui::Color32::YELLOW, "gyro bias calibration: keep the device still ...");
+                // Darker yellow + bold for contrast on light backgrounds.
+                ui.colored_label(
+                    egui::Color32::from_rgb(190, 140, 0),
+                    egui::RichText::new("gyro bias calibration: keep the device still ...").strong().size(14.0),
+                );
+            }
+            if self.zero_ref.is_some() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0, 160, 120),
+                    egui::RichText::new("zeroed — angles relative to reset (Space to re-zero)").strong(),
+                );
             }
 
-            // HUD
-            if let Some(pose) = live.pose {
+            // HUD — displayed pose is relative to the zero.
+            let display = self.displayed_pose();
+            if let Some((_, ypr)) = display {
                 let (yaw, pitch, roll) = if self.settings.rad {
-                    (pose.ypr_rad[0], pose.ypr_rad[1], pose.ypr_rad[2])
+                    (ypr[0], ypr[1], ypr[2])
                 } else {
-                    (
-                        pose.ypr_rad[0].to_degrees(),
-                        pose.ypr_rad[1].to_degrees(),
-                        pose.ypr_rad[2].to_degrees(),
-                    )
+                    (ypr[0].to_degrees(), ypr[1].to_degrees(), ypr[2].to_degrees())
                 };
                 let unit = if self.settings.rad { "rad" } else { "°" };
                 ui.label(format!("YAW {yaw:8.3} {unit}   PITCH {pitch:8.3} {unit}   ROLL {roll:8.3} {unit}"));
@@ -196,14 +297,11 @@ impl eframe::App for TrackerApp {
                 ui.label(note.clone());
             }
 
-            // 3D cube visualization (toggle).
+            // 3D cube visualization (toggle) — rotated by the zeroed pose.
             if self.settings.show_cube {
                 ui.separator();
                 ui.label("Glasses rotation (cube):");
-                let live = self.live.lock().unwrap();
-                let pose = live.pose;
-                drop(live);
-                cube_panel(ui, pose.map(|p| p.q));
+                cube_panel(ui, display.map(|(q, _)| q));
             }
         });
     }
@@ -357,6 +455,56 @@ fn view_rotate(r: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 }
 
 // ---------------------------------------------------------------------------
+// System tray (Windows): minimize-to-tray + restore + quit
+// ---------------------------------------------------------------------------
+
+/// Build the tray icon with a Show/Quit menu. Returns None on failure (the
+/// GUI still works without the tray).
+#[cfg(target_os = "windows")]
+fn build_tray() -> Option<TrayIcon> {
+    use tray_icon::menu::{MenuId, PredefinedMenuItem, Submenu};
+
+    let show = MenuItem::with_id(MenuId::new("show"), "Show window", true, None);
+    let quit = MenuItem::with_id(MenuId::new("quit"), "Quit", true, None);
+
+    let menu = Menu::new();
+    let sub = Submenu::new("Nreal Light Tracker", true);
+    let _ = sub.append(&show);
+    let _ = sub.append(&quit);
+    let _ = sub.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&sub);
+
+    // 32x32 RGBA icon: simple cube-ish glyph (light gray on dark).
+    let (w, h) = (32u32, 32u32);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            let in_cube = (x >= 6 && x < 26) && (y >= 6 && y < 26);
+            if in_cube {
+                // Face gradient: darker bottom-right edge for depth.
+                let shade = 140u8.saturating_add(((25 - x.min(25) as i32).max(0) as u8) / 4)
+                    .saturating_add(((25 - y.min(25) as i32).max(0) as u8) / 4);
+                rgba[i..i + 4].copy_from_slice(&[shade, shade, 200, 255]);
+            } else {
+                rgba[i + 3] = 0; // transparent
+            }
+        }
+    }
+    let icon = match tray_icon::Icon::from_rgba(rgba, w, h) {
+        Ok(i) => i,
+        Err(_) => return None,
+    };
+
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_icon(icon)
+        .with_tooltip("Nreal Light Tracker")
+        .build()
+        .ok()
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -364,7 +512,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Nreal Light Tracker")
-            .with_inner_size([480.0, 420.0]),
+            .with_inner_size([480.0, 440.0]),
         ..Default::default()
     };
     eframe::run_native(
