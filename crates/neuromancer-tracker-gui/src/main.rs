@@ -121,6 +121,13 @@ impl TrackerApp {
 
 impl eframe::App for TrackerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The IMU thread streams poses continuously; egui only repaints when
+        // told to, so request a repaint every frame (and again shortly
+        // after) — otherwise the HUD/cube freeze between input events,
+        // appearing to "run ~0.5 s then hang ~1 s" in bursts.
+        ctx.request_repaint();
+        ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60 fps
+
         // Drain the IMU thread's messages.
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
