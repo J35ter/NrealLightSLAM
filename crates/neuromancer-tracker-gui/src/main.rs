@@ -119,14 +119,14 @@ impl TrackerApp {
     }
 
     /// Current pose transformed by the reset reference (the displayed pose).
-    /// Returns `None` if no pose yet.
-    fn displayed_pose(&self) -> Option<(Quat, [f64; 3])> {
-        let pose = self.live.lock().unwrap().pose?;
+    /// Returns `None` if no pose yet. Does NOT lock `self.live` — the caller
+    /// must pass the pose (avoids re-entrant locking the panel already holds).
+    fn displayed(&self, pose: &Pose) -> (Quat, [f64; 3]) {
         let q = match self.zero_ref {
             Some(z) => z.conjugate() * pose.q, // relative to the zero
             None => pose.q,
         };
-        Some((q, neuromancer_ahrs::quat_to_ypr(q)))
+        (q, neuromancer_ahrs::quat_to_ypr(q))
     }
 
     /// Re-zero: the current orientation becomes 0,0,0 until the next reset.
@@ -169,7 +169,7 @@ impl TrackerApp {
                         n_poses += 1;
                         if n_poses == 1 {
                             dbg_log(&format!("imu: first pose {pose:?}"));
-                        } else if n_poses % 500 == 0 {
+                        } else if n_poses.is_multiple_of(500) {
                             dbg_log(&format!("imu: {n_poses} poses, rate {:.0} Hz", tracker.last_rate_hz));
                         }
                         tx.send(ImuMsg::Pose(pose)).ok();
@@ -191,16 +191,21 @@ impl eframe::App for TrackerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         static FIRST: std::sync::Once = std::sync::Once::new();
         FIRST.call_once(|| dbg_log("update: first frame"));
-        // Log every ~2 s that the UI loop is alive (via the repaint counter).
+        // Log every ~2 s that the UI loop is alive (wall-clock based, not
+        // frame-count — the repaint loop can run at >1 kHz).
         {
             use std::sync::atomic::{AtomicU64, Ordering};
-            static FRAME: AtomicU64 = AtomicU64::new(0);
-            let n = FRAME.fetch_add(1, Ordering::Relaxed);
-            if n % 120 == 0 {
-                dbg_log(&format!("update: alive frame={n}"));
+            static LAST_LOG: AtomicU64 = AtomicU64::new(0);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let last = LAST_LOG.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last) >= 2000 {
+                LAST_LOG.store(now_ms, Ordering::Relaxed);
+                dbg_log("update: alive");
             }
-        }
-        // The IMU thread streams poses continuously; egui only repaints when
+        }        // The IMU thread streams poses continuously; egui only repaints when
         // told to, so request a repaint every frame (and again shortly
         // after) — otherwise the HUD/cube freeze between input events,
         // appearing to "run ~0.5 s then hang ~1 s" in bursts.
@@ -218,7 +223,7 @@ impl eframe::App for TrackerApp {
                 ImuMsg::Pose(p) => {
                     // Send to Opentrack UDP (rate-gated inside the sink),
                     // relative to the current zero.
-                    let ypr = self.displayed_pose().unwrap_or((p.q, p.ypr_rad)).1;
+                    let (_, ypr) = self.displayed(&p);
                     if let Some(s) = self.udp.as_mut() {
                         s.send(if self.settings.rad { ypr } else { ypr.map(f64::to_degrees) });
                     }
@@ -276,8 +281,10 @@ impl eframe::App for TrackerApp {
                 );
             }
 
-            // HUD — displayed pose is relative to the zero.
-            let display = self.displayed_pose();
+            // HUD — displayed pose is relative to the zero. Copy the pose out
+            // of the lock first; displayed() does not lock again (the guard
+            // is still held here, and Mutex is not reentrant).
+            let display = live.pose.as_ref().map(|p| self.displayed(p));
             if let Some((_, ypr)) = display {
                 let (yaw, pitch, roll) = if self.settings.rad {
                     (ypr[0], ypr[1], ypr[2])
