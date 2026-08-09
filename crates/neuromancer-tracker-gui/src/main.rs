@@ -152,10 +152,8 @@ impl TrackerApp {
                     return;
                 }
             };
-            match tracker.configure(&settings) {
-                Ok(()) => dbg_log("imu: configure OK"),
-                Err(e) => dbg_log(&format!("imu: configure FAILED: {e}")),
-            }
+            tracker.configure(&settings);
+            dbg_log("imu: configure OK");
             let calibrating = settings.gyro_calib > 0.0;
             tx.send(ImuMsg::Calibrating(calibrating)).ok();
             let mut n_poses = 0u32;
