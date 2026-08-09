@@ -96,7 +96,7 @@ fn main() -> ExitCode {
                     Ok(true) => {}
                     Ok(false) => {
                         eprintln!("error: unknown flag: {other}");
-                        eprintln!("usage: neuromancer-tracker [--no-udp] [--host H] [--port P] [--udp-rate HZ] [--hud-rate HZ] [--gyro-calib SECS] [--kp F] [--ki F] [--units deg|rad] [--config PATH] [--save-config]");
+                        eprintln!("usage: neuromancer-tracker [--no-udp] [--host H] [--port P] [--udp-rate HZ] [--hud-rate HZ] [--gyro-calib SECS] [--kp F] [--ki F] [--units deg|rad] [--jitter-filter [A]] [--jitter-alpha A] [--config PATH] [--save-config]");
                         return ExitCode::from(2);
                     }
                     Err(e) => {

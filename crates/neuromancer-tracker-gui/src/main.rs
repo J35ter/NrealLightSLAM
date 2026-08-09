@@ -73,6 +73,13 @@ enum ImuMsg {
     Error(String),
 }
 
+/// Commands from the UI to the tracker thread (applied live).
+#[derive(Debug, Clone, Copy)]
+enum JitterCtrl {
+    /// Enable/disable + alpha (0..1). Applied on the next loop iteration.
+    SetJitter { enabled: bool, alpha: f64 },
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -85,6 +92,8 @@ struct TrackerApp {
     udp: Option<UdpSink>,
     running: bool,
     last_settings_note: Option<String>,
+    /// Live control of the tracker thread (jitter filter toggle).
+    jitter_tx: mpsc::Sender<JitterCtrl>,
     /// Orientation reference (the "zero"). `None` = identity (no reset yet).
     /// Once set, every displayed/emitted pose is relative to it until a new
     /// reset replaces it — the zero persists until a new zero is chosen.
@@ -95,6 +104,7 @@ impl TrackerApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
         let (tx, rx) = mpsc::channel::<ImuMsg>();
+        let (jitter_tx, jitter_rx) = mpsc::channel::<JitterCtrl>();
 
         // UDP sink (created once; rebuilt when settings change).
         let udp = if settings.no_udp {
@@ -111,10 +121,11 @@ impl TrackerApp {
             udp,
             running: false,
             last_settings_note: None,
+            jitter_tx,
             zero_ref: None,
         };
         let _ = cc; // theme/fonts later if needed
-        app.start_tracker();
+        app.start_tracker(jitter_rx);
         app
     }
 
@@ -137,7 +148,7 @@ impl TrackerApp {
         }
     }
 
-    fn start_tracker(&mut self) {
+    fn start_tracker(&mut self, jitter_rx: mpsc::Receiver<JitterCtrl>) {
         let settings = self.settings.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -158,6 +169,15 @@ impl TrackerApp {
             tx.send(ImuMsg::Calibrating(calibrating)).ok();
             let mut n_poses = 0u32;
             loop {
+                // Apply live UI commands (jitter toggle) before each sample.
+                while let Ok(cmd) = jitter_rx.try_recv() {
+                    match cmd {
+                        JitterCtrl::SetJitter { enabled, alpha } => {
+                            tracker.set_jitter_filter(enabled, alpha);
+                            dbg_log(&format!("imu: jitter filter -> enabled={enabled} alpha={alpha}"));
+                        }
+                    }
+                }
                 match tracker.next_pose() {
                     Ok(None) => {
                         if calibrating && !tracker.calibrating() {
@@ -240,7 +260,11 @@ impl eframe::App for TrackerApp {
                 ui.heading("Nreal Light Tracker");
                 ui.separator();
                 if ui.button("Start").clicked() && !self.running {
-                    self.start_tracker();
+                    // Fresh control channel: the receiver is moved into the
+                    // new tracker thread, the sender replaces this one.
+                    let (jitter_tx, jitter_rx) = mpsc::channel::<JitterCtrl>();
+                    self.jitter_tx = jitter_tx;
+                    self.start_tracker(jitter_rx);
                 }
                 if ui.button("Stop").clicked() {
                     self.running = false;
@@ -253,7 +277,7 @@ impl eframe::App for TrackerApp {
                     self.reset_zero();
                 }
                 ui.separator();
-                settings_menu(ui, &mut self.settings, &mut self.last_settings_note);
+                settings_menu(ui, &mut self.settings, &mut self.last_settings_note, &self.jitter_tx);
             });
         });
 
@@ -317,8 +341,14 @@ impl eframe::App for TrackerApp {
 // Settings menu — one widget per CLI switch.
 // ---------------------------------------------------------------------------
 
-fn settings_menu(ui: &mut egui::Ui, settings: &mut Settings, note: &mut Option<String>) {
+fn settings_menu(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    note: &mut Option<String>,
+    jitter_tx: &mpsc::Sender<JitterCtrl>,
+) {
     let mut save = false;
+    let mut apply_jitter = false;
     ui.menu_button("Settings", |ui| {
         ui.checkbox(&mut settings.no_udp, "Disable UDP (--no-udp)");
         ui.add(egui::DragValue::new(&mut settings.udp_rate).prefix("UDP rate (--udp-rate): ").range(1.0..=200.0));
@@ -338,10 +368,30 @@ fn settings_menu(ui: &mut egui::Ui, settings: &mut Settings, note: &mut Option<S
         ui.add(egui::DragValue::new(&mut settings.port).prefix("UDP port (--port): ").range(1..=65535));
         ui.checkbox(&mut settings.show_cube, "Show 3D cube visualization");
         ui.separator();
+        // Jitter filter — applied LIVE via the control channel (no restart).
+        if ui.checkbox(&mut settings.jitter_filter, "Jitter filter (--jitter-filter)").changed() {
+            apply_jitter = true;
+        }
+        if ui
+            .add(egui::DragValue::new(&mut settings.jitter_alpha).prefix("Jitter alpha (--jitter-alpha): ").range(0.0..=1.0).speed(0.005))
+            .changed()
+        {
+            apply_jitter = true;
+        }
+        if settings.jitter_filter {
+            ui.label("smooths the constant headset jitter (smaller = smoother)");
+        }
+        ui.separator();
         if ui.button("Save settings (TOML)").clicked() {
             save = true;
         }
     });
+    if apply_jitter {
+        let _ = jitter_tx.send(JitterCtrl::SetJitter {
+            enabled: settings.jitter_filter,
+            alpha: settings.jitter_alpha,
+        });
+    }
     if save {
         match settings.save() {
             Ok(path) => {

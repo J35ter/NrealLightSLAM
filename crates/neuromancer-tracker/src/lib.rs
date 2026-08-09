@@ -47,6 +47,13 @@ pub struct Settings {
     pub rad: bool,
     /// (GUI) show the 3D cube visualization.
     pub show_cube: bool,
+    /// Jitter filter: smooth the raw Mahony quaternion with an
+    /// exponential moving average to suppress the headset's constant
+    /// high-frequency jitter (0 = off).
+    pub jitter_filter: bool,
+    /// Jitter filter strength: 0..1 EMA factor per sample. Small values
+    /// smooth more (0.05–0.2 typical at 1 kHz); 1 = raw, no smoothing.
+    pub jitter_alpha: f64,
 }
 
 impl Default for Settings {
@@ -62,6 +69,8 @@ impl Default for Settings {
             ki: 0.005,
             rad: false,
             show_cube: true,
+            jitter_filter: false,
+            jitter_alpha: 0.1,
         }
     }
 }
@@ -118,6 +127,19 @@ impl Settings {
                 };
                 true
             }
+            "--jitter-filter" => {
+                // Optional value: `--jitter-filter` or `--jitter-filter 0.2`.
+                if let Some(raw) = value {
+                    self.jitter_alpha = parse_range(raw, flag, 0.0, 1.0)?;
+                }
+                self.jitter_filter = true;
+                true
+            }
+            "--jitter-alpha" => {
+                self.jitter_alpha = parse_range(v()?, flag, 0.0, 1.0)?;
+                self.jitter_filter = self.jitter_alpha > 0.0;
+                true
+            }
             _ => false,
         })
     }
@@ -169,6 +191,42 @@ fn parse_nonneg(raw: &str, flag: &str) -> Result<f64, String> {
         return Err(format!("{flag} must be >= 0: {raw}"));
     }
     Ok(v)
+}
+
+fn parse_range(raw: &str, flag: &str, lo: f64, hi: f64) -> Result<f64, String> {
+    let v: f64 = raw.parse().map_err(|_| format!("invalid value for {flag}: {raw:?}"))?;
+    if !(lo..=hi).contains(&v) {
+        return Err(format!("{flag} must be in [{lo}, {hi}]: {raw}"));
+    }
+    Ok(v)
+}
+
+/// Exponential moving average on a quaternion (the jitter filter).
+///
+/// Blends the previous filtered quaternion with the fresh sample by `alpha`
+/// (0 = keep previous entirely, 1 = use the raw sample). Handles the q/-q
+/// sign ambiguity by flipping the previous quat into the same hemisphere as
+/// the new sample before blending, then normalizes.
+pub fn ema_quat(prev: Option<Quat>, q: Quat, alpha: f64) -> Quat {
+    let Some(prev) = prev else { return q };
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha >= 1.0 {
+        return q;
+    }
+    if alpha <= 0.0 {
+        return prev;
+    }
+    // q and -q are the same rotation; pick the sign closest to prev so the
+    // blend does not cancel out across the hemisphere boundary.
+    let dot = prev.w * q.w + prev.x * q.x + prev.y * q.y + prev.z * q.z;
+    let q = if dot < 0.0 { Quat::new(-q.w, -q.x, -q.y, -q.z) } else { q };
+    Quat::new(
+        prev.w + alpha * (q.w - prev.w),
+        prev.x + alpha * (q.x - prev.x),
+        prev.y + alpha * (q.y - prev.y),
+        prev.z + alpha * (q.z - prev.z),
+    )
+    .normalize()
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +356,10 @@ pub struct ImuTracker {
     prev_t: Option<f64>,
     t0: Instant,
     pub last_rate_hz: f64,
+    /// Jitter filter EMA factor (0 = off). See [`ema_quat`].
+    jitter_alpha: f64,
+    /// Previous filtered orientation (None until the first pose).
+    filter_q: Option<Quat>,
 }
 
 impl ImuTracker {
@@ -313,6 +375,8 @@ impl ImuTracker {
             prev_t: None,
             t0: Instant::now(),
             last_rate_hz: 0.0,
+            jitter_alpha: 0.0,
+            filter_q: None,
         })
     }
 
@@ -321,6 +385,15 @@ impl ImuTracker {
         self.calib = (settings.gyro_calib > 0.0).then(|| Calibrator::new(settings.gyro_calib));
         self.mahony = Mahony::with_gains(settings.kp, settings.ki);
         self.prev_t = None;
+        // Reset the filter state so the first post-calibration pose seeds it
+        // (no blending across the calibration window).
+        self.jitter_alpha = if settings.jitter_filter { settings.jitter_alpha } else { 0.0 };
+        self.filter_q = None;
+    }
+
+    /// Set the jitter filter live (GUI menu toggle). `alpha` 0..1.
+    pub fn set_jitter_filter(&mut self, enabled: bool, alpha: f64) {
+        self.jitter_alpha = if enabled { alpha.clamp(0.0, 1.0) } else { 0.0 };
     }
 
     /// Whether the startup bias calibration is still running.
@@ -369,7 +442,101 @@ impl ImuTracker {
         let q = self
             .mahony
             .update(accel, [gyro[0] - self.bias[0], gyro[1] - self.bias[1], gyro[2] - self.bias[2]], dt);
+        // Jitter filter: EMA on the quaternion (off when jitter_alpha == 0).
+        let q = if self.jitter_alpha > 0.0 {
+            let filtered = ema_quat(self.filter_q, q, self.jitter_alpha);
+            self.filter_q = Some(filtered);
+            filtered
+        } else {
+            q
+        };
         let ypr_rad = quat_to_ypr(q);
         Ok(Some(Pose { t, ypr_rad, q }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(angle_deg: f64) -> Quat {
+        Quat::from_axis_angle([0.0, 1.0, 0.0], angle_deg.to_radians())
+    }
+
+    #[test]
+    fn ema_first_sample_returns_raw() {
+        let raw = q(10.0);
+        assert_eq!(ema_quat(None, raw, 0.1), raw);
+    }
+
+    #[test]
+    fn ema_alpha_1_is_raw() {
+        let prev = q(0.0);
+        let raw = q(10.0);
+        let out = ema_quat(Some(prev), raw, 1.0);
+        assert!((out.w - raw.w).abs() < 1e-9 && (out.x - raw.x).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ema_alpha_0_keeps_previous() {
+        let prev = q(0.0);
+        let out = ema_quat(Some(prev), q(10.0), 0.0);
+        assert!((out.w - prev.w).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ema_smooths_jitter() {
+        // A jittering sequence (±0.5° around 0) should settle near 0 with a
+        // small alpha: the EMA output is always inside the convex hull of the
+        // inputs, so the mean magnitude stays well below the raw extremes.
+        let mut f = q(0.0);
+        let mut max_raw = 0.0f64;
+        let mut sum_filtered = 0.0f64;
+        let n = 2000;
+        for i in 0..n {
+            let raw = q(if i % 2 == 0 { 0.5 } else { -0.5 });
+            f = ema_quat(Some(f), raw, 0.05);
+            let ypr = quat_to_ypr(f);
+            sum_filtered += ypr[0].abs().to_degrees();
+            max_raw = max_raw.max(quat_to_ypr(raw)[0].abs().to_degrees());
+        }
+        let avg_filtered = sum_filtered / n as f64;
+        assert!(max_raw > 0.4, "raw jitter should be ~0.5 deg, got {max_raw}");
+        assert!(
+            avg_filtered < 0.05,
+            "filter should suppress jitter to <0.05 deg avg, got {avg_filtered}"
+        );
+    }
+
+    #[test]
+    fn ema_handles_sign_flip() {
+        // q and -q are the same rotation: blending across the hemisphere
+        // boundary must not produce a zero quaternion.
+        let prev = Quat::new(1.0, 0.0, 0.0, 0.0);
+        let raw = Quat::new(-0.9999, 0.014, 0.0, 0.0); // ~1.6° yaw, negated
+        let out = ema_quat(Some(prev), raw, 0.5);
+        let ypr = quat_to_ypr(out);
+        assert!(ypr[0].abs() < 2.0f64.to_radians(), "yaw should stay small, got {}", ypr[0]);
+    }
+
+    #[test]
+    fn jitter_filter_cli_flags() {
+        let mut s = Settings::default();
+        assert!(s.apply_cli("--jitter-filter", None).unwrap());
+        assert!(s.jitter_filter);
+        assert!((s.jitter_alpha - 0.1).abs() < 1e-12);
+
+        let mut s = Settings::default();
+        assert!(s.apply_cli("--jitter-filter", Some("0.3")).unwrap());
+        assert!((s.jitter_alpha - 0.3).abs() < 1e-12);
+
+        let mut s = Settings::default();
+        assert!(s.apply_cli("--jitter-alpha", Some("0.05")).unwrap());
+        assert!(s.jitter_filter);
+        assert!((s.jitter_alpha - 0.05).abs() < 1e-12);
+
+        let mut s = Settings::default();
+        assert!(s.apply_cli("--jitter-alpha", Some("1.5")).is_err(), ">1 must error");
+        assert!(s.apply_cli("--jitter-alpha", Some("-1")).is_err(), "<0 must error");
     }
 }
