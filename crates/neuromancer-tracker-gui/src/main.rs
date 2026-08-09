@@ -142,15 +142,23 @@ impl TrackerApp {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let mut tracker = match ImuTracker::open() {
-                Ok(t) => t,
+                Ok(t) => {
+                    dbg_log("imu: open OK");
+                    t
+                }
                 Err(e) => {
+                    dbg_log(&format!("imu: open FAILED: {e}"));
                     tx.send(ImuMsg::Error(e)).ok();
                     return;
                 }
             };
-            tracker.configure(&settings);
+            match tracker.configure(&settings) {
+                Ok(()) => dbg_log("imu: configure OK"),
+                Err(e) => dbg_log(&format!("imu: configure FAILED: {e}")),
+            }
             let calibrating = settings.gyro_calib > 0.0;
             tx.send(ImuMsg::Calibrating(calibrating)).ok();
+            let mut n_poses = 0u32;
             loop {
                 match tracker.next_pose() {
                     Ok(None) => {
@@ -160,10 +168,17 @@ impl TrackerApp {
                         continue;
                     }
                     Ok(Some(pose)) => {
+                        n_poses += 1;
+                        if n_poses == 1 {
+                            dbg_log(&format!("imu: first pose {pose:?}"));
+                        } else if n_poses % 500 == 0 {
+                            dbg_log(&format!("imu: {n_poses} poses, rate {:.0} Hz", tracker.last_rate_hz));
+                        }
                         tx.send(ImuMsg::Pose(pose)).ok();
                         tx.send(ImuMsg::Rate(tracker.last_rate_hz)).ok();
                     }
                     Err(e) => {
+                        dbg_log(&format!("imu: read error: {e}"));
                         tx.send(ImuMsg::Error(e)).ok();
                         break;
                     }
@@ -178,6 +193,15 @@ impl eframe::App for TrackerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         static FIRST: std::sync::Once = std::sync::Once::new();
         FIRST.call_once(|| dbg_log("update: first frame"));
+        // Log every ~2 s that the UI loop is alive (via the repaint counter).
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static FRAME: AtomicU64 = AtomicU64::new(0);
+            let n = FRAME.fetch_add(1, Ordering::Relaxed);
+            if n % 120 == 0 {
+                dbg_log(&format!("update: alive frame={n}"));
+            }
+        }
         // The IMU thread streams poses continuously; egui only repaints when
         // told to, so request a repaint every frame (and again shortly
         // after) — otherwise the HUD/cube freeze between input events,
